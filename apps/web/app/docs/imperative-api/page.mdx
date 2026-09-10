@@ -1,0 +1,330 @@
+import { DemoCustomToolbar } from "@/components/demo-custom-toolbar";
+
+export const metadata = {
+  title: "Imperative API — react-virtual-checkbox-tree",
+  description:
+    "The TreeRef handle: expandAll, collapseAll, scrollToId, focusId and getEngine, with the difference between scrolling to a row and focusing one.",
+  alternates: { canonical: "/docs/imperative-api" },
+};
+
+# Imperative API
+
+`<Tree>` forwards a ref with five methods. Four are conveniences; the fifth, `getEngine`, is the
+escape hatch to everything the props do not cover.
+
+```ts
+type TreeRef = {
+  /** Collapses every folder. */
+  collapseAll: () => void;
+  /** Expands every folder. */
+  expandAll: () => void;
+  /** The underlying Engine, for anything the props don't cover. */
+  getEngine: () => Engine;
+  /** Moves keyboard focus to a node, expanding ancestors and scrolling to it. */
+  focusId: (id: string) => void;
+  /** Scrolls a node into view, expanding its ancestors first. */
+  scrollToId: (id: string) => void;
+};
+```
+
+## Getting the handle
+
+```tsx
+"use client";
+
+import { useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function App() {
+  const treeRef = useRef<TreeRef>(null);
+
+  return (
+    <>
+      <button onClick={() => treeRef.current?.expandAll()} type="button">
+        Expand all
+      </button>
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={treeRef} />
+    </>
+  );
+}
+```
+
+<Callout type="warn" title="The ref is null during the first render">
+`treeRef.current` is only populated after the tree mounts. Read it inside an event handler or a
+`useEffect`, never in the render body — and keep the `?.`, because a `<Tree>` rendered conditionally
+can go back to `null`.
+</Callout>
+
+## expandAll and collapseAll
+
+```tsx
+treeRef.current?.expandAll();   // every folder open
+treeRef.current?.collapseAll(); // every folder closed
+```
+
+Both fire `onExpand` with the new list of expanded folder IDs. Three things to know:
+
+- **`collapseAll` keeps the root expanded.** `"__root__"` is structural and never rendered, so it
+  stays in the set. That also means the array passed to `onExpand` always contains `"__root__"`.
+- **`expandAll` is also a keyboard shortcut.** Pressing `*` while the tree has focus does the same
+  thing. There is no keyboard equivalent for collapsing everything.
+- **`expandAll` on a very large tree is not free.** It makes every node a visible row, and flattening
+  that list is the cost you pay: 25 ms at 111,110 nodes, 684 ms at 1,111,110. The DOM stays small —
+  only the rows in view mount — but the flatten happens on the main thread. On trees past ~100,000
+  nodes, offer "expand this folder" rather than "expand everything".
+
+## What is the difference between scrollToId and focusId?
+
+Both reveal the node first: `revealNode` expands every ancestor so the row exists in the flattened
+view. After that they diverge.
+
+| | `scrollToId(id)` | `focusId(id)` |
+| --- | --- | --- |
+| Expands ancestors | Yes | Yes |
+| Scrolls the viewport | Yes | Yes |
+| Sets the keyboard-active row (`aria-activedescendant`, `data-active`) | No | Yes |
+| Moves DOM focus to the tree container | No | Yes |
+| Announced by a screen reader | No | Yes |
+
+Use `scrollToId` to *show* someone a row — jumping to a deep-linked path, following a selection made
+elsewhere on the page. Use `focusId` to *hand over control*: the row becomes the active row, the tree
+takes focus, and the very next ArrowDown moves from there.
+
+```tsx
+// "Reveal in tree" from a breadcrumb: show it, but don't steal focus.
+onClick={() => treeRef.current?.scrollToId("row")}
+
+// "Jump to first error": put the user on the row, keyboard and all.
+onClick={() => treeRef.current?.focusId("row")}
+```
+
+Two shared caveats:
+
+- **Scrolling uses `align: "auto"`** — the viewport moves only if the row is not already visible.
+  Calling either method on a row already on screen scrolls nothing.
+- **A filtered-out node is a no-op.** While a search query is active the flattened view only contains
+  matches and their ancestors. If the target is not among them, ancestors are still expanded but
+  there is no row to scroll to and nothing happens. Clear the query first.
+
+## What is getEngine for?
+
+`getEngine()` returns the live `Engine` instance backing the tree — the same object the component
+renders from. It is the answer to every "there is no prop for that" question: match counts, the
+sparse selection, node counts, parent lookups, expanding one specific folder.
+
+Mutations made through the engine are not a side channel. They bump the same versions the component
+subscribes to, so the tree re-renders, and `onCheck` / `onExpand` fire exactly as if the user had
+clicked.
+
+```tsx
+const engine = treeRef.current?.getEngine();
+if (!engine) return;
+
+engine.checkAll();                    // fires onCheck with every leaf ID
+engine.setExpandedFor("src", true);   // fires onExpand
+engine.uncheckAll();                  // fires onCheck with []
+```
+
+<Callout type="note" title="One thing not to do through the engine">
+Do not call `engine.setData()` yourself. Pass a new `data` prop instead — `<Tree>` already forwards
+it to the engine, and doing both applies the change twice.
+</Callout>
+
+Methods worth knowing about, all documented in full on the [Engine reference](/docs/api/engine):
+
+| Method | Returns | Why you would reach for it |
+| --- | --- | --- |
+| `getMatchCount()` | `number` | How many nodes the active query matched. `0` when search is inactive. |
+| `isSearchActive()` | `boolean` | Whether the query passed `minSearchChars`. |
+| `getVisibleItems()` | `VisibleItem[]` | Every row in the current flattened view, in order — expansion and search applied. Not just the ones the virtualizer has mounted. |
+| `getAllChecked()` | `string[]` | Every checked leaf ID. Materializes the full list. |
+| `getCheckedSubtrees()` | `Array<{ checked: boolean; id: string }>` | The sparse selection — one entry per explicit assignment. |
+| `setCheckedSubtrees(entries)` | `void` | Restores a selection captured sparsely. |
+| `getViewState(id)` | `CheckedState` | One node's tri-state, honoring the search filter. |
+| `getNodeCount()` / `getLeafCount()` | `number` | Totals, for "12 of 4,318 selected". |
+| `getParent(id)` | `string \| null` | Walk upward. |
+| `subscribe(cb)` | `() => void` | Re-read after any change. Returns its own unsubscribe. |
+
+### A status bar fed by the engine
+
+Nothing on `<Tree>` reports the match count or the sparse selection, so a status bar has to read the
+engine and subscribe to it. The ref is null on the first render, which is why the subscription is set
+up in an effect.
+
+```tsx
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+type Stats = { assignments: number; checked: number; leaves: number; matches: number };
+
+export default function App() {
+  const treeRef = useRef<TreeRef>(null);
+  const [query, setQuery] = useState("");
+  const [stats, setStats] = useState<Stats>({
+    assignments: 0,
+    checked: 0,
+    leaves: 0,
+    matches: 0,
+  });
+
+  useEffect(() => {
+    const engine = treeRef.current?.getEngine();
+    if (!engine) return;
+
+    const read = () =>
+      setStats({
+        // One entry per explicit check, not per checked leaf: checking a folder
+        // of 50,000 files writes one assignment and 50,000 checked leaves.
+        assignments: engine.getCheckedSubtrees().length,
+        checked: engine.getAllChecked().length,
+        leaves: engine.getLeafCount(),
+        matches: engine.isSearchActive() ? engine.getMatchCount() : 0,
+      });
+
+    read();
+    return engine.subscribe(read); // subscribe returns the unsubscribe function
+  }, []);
+
+  return (
+    <>
+      <input onChange={(e) => setQuery(e.target.value)} placeholder="Search…" value={query} />
+
+      <Tree
+        aria-label="Project files"
+        data={fileTree}
+        height={320}
+        ref={treeRef}
+        searchQuery={query}
+      />
+
+      <p>
+        {stats.checked} of {stats.leaves} files selected, stored as {stats.assignments}{" "}
+        {stats.assignments === 1 ? "assignment" : "assignments"}
+        {query ? ` · ${stats.matches} matches` : ""}
+      </p>
+    </>
+  );
+}
+```
+
+`getAllChecked()` builds the full array every time the selection changes — 3.7 ms at 111,110 nodes.
+`getCheckedSubtrees()` is the cheap counterpart: it costs one entry per explicit assignment rather
+than one per checked leaf. It is not a substitute for "is anything selected", though — unchecking a
+node inside a checked folder writes an assignment of `false`, so a non-empty result does not imply a
+non-empty selection. See [Persist a selection](/docs/recipes/persist-selection) for storing the
+sparse form instead of the expanded one.
+
+## A complete toolbar
+
+<DemoCustomToolbar />
+
+Every button above is one `TreeRef` call, the search box is the `searchQuery` prop, and the counters
+underneath come from `getEngine()`. Collapse everything, then press `focusId("row")` and immediately
+use the arrow keys — the row is already active, and the tree already has focus.
+
+```tsx
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function App() {
+  const treeRef = useRef<TreeRef>(null);
+  const [rows, setRows] = useState(0);
+
+  useEffect(() => {
+    const engine = treeRef.current?.getEngine();
+    if (!engine) return;
+    const read = () => setRows(engine.getVisibleItems().length);
+    read();
+    return engine.subscribe(read);
+  }, []);
+
+  return (
+    <>
+      <div role="toolbar" aria-label="Tree actions">
+        <button onClick={() => treeRef.current?.expandAll()} type="button">
+          Expand all
+        </button>
+        <button onClick={() => treeRef.current?.collapseAll()} type="button">
+          Collapse all
+        </button>
+        <button onClick={() => treeRef.current?.scrollToId("row")} type="button">
+          Reveal row.tsx
+        </button>
+        <button onClick={() => treeRef.current?.focusId("row")} type="button">
+          Go to row.tsx
+        </button>
+        <button onClick={() => treeRef.current?.getEngine().checkAll()} type="button">
+          Select all
+        </button>
+        <button onClick={() => treeRef.current?.getEngine().uncheckAll()} type="button">
+          Clear
+        </button>
+      </div>
+
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={treeRef} />
+
+      <p>{rows} rows visible</p>
+    </>
+  );
+}
+```
+
+<Callout type="tip" title="Give the toolbar back to the keyboard">
+`focusId` moves DOM focus into the tree, which is what you want for a "go to" button and wrong for a
+"select all" button. If a toolbar action should leave focus where it was, use the engine directly —
+`getEngine().checkAll()` changes the selection without touching focus.
+</Callout>
+
+## Is the imperative API a replacement for props?
+
+No. Anything the props express should stay in props: `checkedItems`, `expandedItems` and
+`searchQuery` are the declarative path, and mixing both for the same piece of state means two
+sources of truth fighting over one value. The ref is for **actions** — expand, reveal, focus — and
+for **reads** the props do not expose. See [Controlled & uncontrolled](/docs/controlled-uncontrolled)
+for where that line sits.
+
+## Next
+
+- [Engine](/docs/api/engine) — every method on the class, not just the ones above.
+- [Render props](/docs/rendering) — replacing the row body, the checkbox and the expander.
+- [Search](/docs/search) — what `getMatchCount()` is counting.

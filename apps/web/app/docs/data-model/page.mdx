@@ -1,0 +1,381 @@
+export const metadata = {
+  title: "Data model — react-virtual-checkbox-tree",
+  description:
+    "How TreeDefinition works: the flat node map, the __root__ sentinel, folders versus leaves, and converters for nested JSON and flat path lists.",
+  alternates: { canonical: "/docs/data-model" },
+};
+
+# Data model
+
+The tree is one flat object — a `Record<string, TreeItem>` keyed by node ID — with a single
+`__root__` entry whose `children` are your top-level rows. Nothing in it is nested.
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+export const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+```
+
+That map describes this tree. It is the dataset used by every example in these docs, and by the
+library's own test suite.
+
+```text
+__root__               never rendered
+├─ docs                folder
+│  ├─ README.md        leaf
+│  └─ guide.md         leaf
+└─ src                 folder
+   ├─ engine.ts        leaf
+   └─ ui               folder
+      ├─ tree.tsx      leaf
+      └─ row.tsx       leaf
+```
+
+## What fields does a node have?
+
+`TreeItem` has four fields, two of them optional.
+
+| Field | Type | Required | What it does |
+| --- | --- | --- | --- |
+| `id` | `string` (or `number`) | yes | Stable identifier. Should equal the key this item is stored under. |
+| `label` | `string` | yes | Text the default row renderer prints, and the only string search matches. |
+| `children` | `string[]` | no | IDs of this node's children, in render order. Presence of at least one child is what makes a node a folder. |
+| `data` | `Record<string, unknown>` | no | Arbitrary metadata, passed through to your renderers untouched. |
+
+IDs are used as map keys everywhere inside the engine, so keep them strings. `label` falls back to
+the map key when you omit it, which is a debugging convenience, not a feature to rely on.
+
+## Why is the map flat rather than nested?
+
+Three concrete reasons, in order of how much they matter.
+
+**Every lookup is O(1).** `getParent`, `indexOf`, `getViewState`, `revealNode` and `toggle` are map
+reads, not searches. A nested structure would make "what is the state of node `tree`?" a traversal.
+
+**IDs stay stable across updates.** When you pass a new `data` object, the engine matches nodes by
+key, so selection and expansion survive for every node that still exists. Identity is the key, not a
+position in an array.
+
+**You can build it from a flat API response without recursion.** Most backends hand you rows with an
+`id` and a `parentId`. That is already the shape:
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+type Row = { id: string; name: string; parentId: null | string };
+
+export function fromRows(rows: Row[]): TreeDefinition {
+  const data: TreeDefinition = {
+    __root__: { id: "__root__", label: "root", children: [] },
+  };
+  for (const row of rows) data[row.id] = { id: row.id, label: row.name };
+  for (const row of rows) {
+    const parent = data[row.parentId ?? "__root__"];
+    if (!parent) continue;
+    (parent.children ??= []).push(row.id);
+  }
+  return data;
+}
+```
+
+Two passes, no recursion, no sorting by depth. Children render in the order they appear in the
+`children` array, so control ordering there.
+
+## What is the `__root__` node?
+
+`__root__` is a sentinel container for your top-level rows. It is never rendered — no row, no
+checkbox, no keyboard stop — and it is always expanded. `toggleExpanded("__root__")` and
+`setExpandedFor("__root__", false)` are deliberate no-ops.
+
+Three consequences worth knowing:
+
+- `getExpanded()` **includes** `"__root__"` in its array, and so does the value handed to `onExpand`.
+  Echoing that array back into `expandedItems` is safe; so is filtering the root out first.
+- `getNodeCount()` excludes the root.
+- `getAllChecked()` never returns the root.
+
+The root's ID is configurable only on the `Engine` class, through its `rootId` option. `<Tree>`
+always uses `"__root__"`.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+
+const engine = new Engine(data, { rootId: "$root" });
+```
+
+## When is a node a folder?
+
+A node is a folder when it has at least one child that exists in the map. That is the whole rule:
+`children.length > 0`, evaluated once when the structure is built.
+
+Folders get an expander, derive their checkbox state from their descendants, and can be
+indeterminate. Leaves are the only nodes that carry their own checked state, the only nodes counted
+by `getLeafCount()`, and the only IDs that ever appear in `onCheck`.
+
+There is no `isFolder` flag on `TreeItem`, and no way to declare one.
+
+### An empty children array makes a leaf, not an empty folder
+
+<Callout type="warn" title="This one surprises people">
+`children: []` and omitting `children` entirely produce exactly the same node: a **leaf**. An
+"empty folder" is not expressible. The node will render without an expander and *will* be checkable,
+and its ID will show up in `onCheck`.
+</Callout>
+
+There are three honest ways around it, none of them free:
+
+1. **Drop empty folders from `data`.** If an empty directory carries no meaning in your UI, filter
+   it out where you build the map. This is usually the right answer.
+2. **Give it one placeholder child.** Add a synthetic leaf, mark it in `data`, and filter it back out
+   of the selection you receive.
+
+   ```ts
+   import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+   const data: TreeDefinition = {
+     __root__: { id: "__root__", label: "root", children: ["assets"] },
+     assets: { id: "assets", label: "assets", children: ["assets/__empty__"] },
+     "assets/__empty__": {
+       id: "assets/__empty__",
+       label: "(empty)",
+       data: { placeholder: true },
+     },
+   };
+
+   // Wherever you read the selection:
+   const realIds = (checked: string[]) =>
+     checked.filter((id) => !data[id]?.data?.placeholder);
+   ```
+
+3. **Keep it as a leaf and dress it up.** Put `{ kind: "dir" }` in `data` and render a folder icon
+   from `renderItem`. It stays checkable — a single click will check it — so only do this when
+   "select this empty folder" is a sentence that means something in your product.
+
+## What is the `data` blob for?
+
+Anything your renderers need and the engine should not care about: icons, file sizes, permission
+levels, avatar URLs, a `kind` discriminator. It is passed through untouched and reaches every render
+prop as `props.item.data`.
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md", data: { bytes: 4_120 } },
+  guide: { id: "guide", label: "guide.md", data: { bytes: 18_300 } },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts", data: { bytes: 31_800 } },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx", data: { bytes: 12_400 } },
+  row: { id: "row", label: "row.tsx", data: { bytes: 2_900 } },
+};
+
+export function FileSizes() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      height={320}
+      renderItem={({ isFolder, item }) => (
+        <span>
+          {item.label}
+          {!isFolder && item.data?.bytes ? (
+            <span style={{ opacity: 0.6 }}> {String(item.data.bytes)} B</span>
+          ) : null}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+Search does **not** look at `data`. Only `label` is matched.
+
+## What happens when the data is wrong?
+
+The engine is defensive about structure it can survive and loud about structure it cannot.
+
+| Problem | What happens |
+| --- | --- |
+| A child ID with no entry of its own | Dropped from `children`, with a `console.warn` in development naming the parent and up to five missing IDs. The tree renders the surviving children. |
+| A node listing itself as its own child | Silently dropped. |
+| A cycle | **Throws** during construction, with the offending edge in the message. |
+| The same node listed under two parents | The last parent seen wins. A `console.warn` in development explains it. |
+| A node unreachable from `__root__` | Registered but never rendered. No warning. |
+
+<Callout type="warn" title="The cycle check is development-only">
+`assertAcyclic` runs only when `process.env.NODE_ENV !== "production"`. A cycle that reaches a
+production build will hang traversals instead of throwing. Validate data you did not construct
+yourself before you ship it.
+</Callout>
+
+## How do I model a node with two parents?
+
+Duplicate it under synthetic IDs and map back when you read the selection. This engine models a
+tree, not a graph, and a shared node keeps only the last parent it saw — which also means its checked
+state follows only that branch.
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+// "shared.ts" belongs to both teams. Give each occurrence its own ID.
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["a", "b"] },
+  a: { id: "a", label: "Team A", children: ["a/shared"] },
+  b: { id: "b", label: "Team B", children: ["b/shared"] },
+  "a/shared": { id: "a/shared", label: "shared.ts", data: { realId: "shared" } },
+  "b/shared": { id: "b/shared", label: "shared.ts", data: { realId: "shared" } },
+};
+
+// onCheck hands you ["a/shared", "b/shared"]; collapse them back yourself.
+const toRealIds = (checked: string[]) =>
+  Array.from(new Set(checked.map((id) => String(data[id]?.data?.realId ?? id))));
+```
+
+The two copies are independent: checking one does not check the other. If your product needs them
+linked, do it in your own `onCheck` handler.
+
+## How do I convert a nested JSON tree?
+
+Iteratively, so a deep tree cannot blow the call stack.
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+type NestedNode = { children?: NestedNode[]; id: string; name: string };
+
+export function flatten(roots: NestedNode[]): TreeDefinition {
+  const data: TreeDefinition = {
+    __root__: { id: "__root__", label: "root", children: roots.map((n) => n.id) },
+  };
+
+  const stack: NestedNode[] = [...roots];
+  while (stack.length) {
+    const node = stack.pop()!;
+    const children = node.children ?? [];
+    data[node.id] = {
+      id: node.id,
+      label: node.name,
+      // Omit `children` for leaves — an empty array would mean the same thing,
+      // but omitting it makes the intent obvious when you read the map back.
+      ...(children.length > 0 ? { children: children.map((c) => c.id) } : {}),
+    };
+    for (const child of children) stack.push(child);
+  }
+
+  return data;
+}
+```
+
+## How do I convert a flat list of paths?
+
+Split on the separator and create each missing segment as you walk it. Interior segments become
+folders automatically, because they acquire children.
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+export function fromPaths(paths: string[]): TreeDefinition {
+  const data: TreeDefinition = {
+    __root__: { id: "__root__", label: "root", children: [] },
+  };
+
+  for (const path of paths) {
+    const segments = path.split("/").filter(Boolean);
+    let parentId = "__root__";
+
+    segments.forEach((segment, i) => {
+      const id = segments.slice(0, i + 1).join("/"); // full path as a stable ID
+      if (!data[id]) {
+        data[id] = { id, label: segment };
+        (data[parentId].children ??= []).push(id);
+      }
+      parentId = id;
+    });
+  }
+
+  return data;
+}
+
+fromPaths([
+  "docs/README.md",
+  "docs/guide.md",
+  "src/engine.ts",
+  "src/ui/tree.tsx",
+  "src/ui/row.tsx",
+]);
+// __root__ -> ["docs", "src"]
+// docs     -> ["docs/README.md", "docs/guide.md"]
+// src      -> ["src/engine.ts", "src/ui"]
+// src/ui   -> ["src/ui/tree.tsx", "src/ui/row.tsx"]
+```
+
+Using the full path as the ID gives you stable, human-readable IDs for free, and makes
+`onCheck`'s output directly usable.
+
+## What happens when I pass a new data object?
+
+The structure is swapped in place, and selection, expansion and the active search query survive for
+every node that still exists. State for nodes that disappeared is pruned.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const base: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function GrowingTree() {
+  const [data, setData] = useState(base);
+
+  const addTests = () =>
+    setData((prev) => ({
+      ...prev,
+      __root__: { id: "__root__", label: "root", children: ["docs", "src", "tests"] },
+      tests: { id: "tests", label: "tests", children: ["spec"] },
+      spec: { id: "spec", label: "engine.test.ts" },
+    }));
+
+  return (
+    <>
+      <button onClick={addTests} type="button">
+        Add tests/
+      </button>
+      <Tree aria-label="Project files" data={data} height={320} />
+    </>
+  );
+}
+```
+
+Do not remount the tree to apply new data — no `key={JSON.stringify(data)}`. Remounting is the one
+thing that throws the user's selection away.
+
+## Next
+
+- [Checkbox semantics](/docs/checkbox-semantics) — how folder state is derived from this shape
+- [Search](/docs/search) — what `label` matching does to the visible set

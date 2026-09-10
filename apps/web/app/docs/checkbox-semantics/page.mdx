@@ -1,0 +1,366 @@
+export const metadata = {
+  title: "Checkbox semantics — react-virtual-checkbox-tree",
+  description:
+    "Tri-state derivation, leaf-only checking, the sparse assignment model behind constant-time cascades, and how toggling changes under a search filter.",
+  alternates: { canonical: "/docs/checkbox-semantics" },
+};
+
+# Checkbox semantics
+
+Only leaves carry a checked state. Every folder's state is derived from its descendants, and
+`onCheck` returns leaf IDs only — never a folder ID, under any circumstance.
+
+That single rule explains most of this page. The rest is how the derivation is computed, and why
+checking a folder of 50,000 files costs one write instead of 50,000.
+
+## What are the three states?
+
+`CheckedState` is a string enum, and its values are exactly the values that land in the row's
+`data-state` attribute.
+
+| Value | Applies to | Meaning |
+| --- | --- | --- |
+| `CheckedState.Checked` — `"checked"` | leaves and folders | A leaf you checked, or a folder whose every child is checked. |
+| `CheckedState.Unchecked` — `"unchecked"` | leaves and folders | The default. A folder with no checked descendants. |
+| `CheckedState.Indeterminate` — `"indeterminate"` | folders only | Some but not all descendants are checked. |
+
+A leaf is never indeterminate. In the DOM the row carries `aria-checked="true"`, `"false"` or
+`"mixed"`, and `data-state` mirrors it with the strings above.
+
+```ts
+import { CheckedState } from "react-virtual-checkbox-tree";
+
+CheckedState.Checked; // "checked"
+CheckedState.Indeterminate; // "indeterminate"
+CheckedState.Unchecked; // "unchecked"
+```
+
+## How is a folder's state derived?
+
+Bottom-up, over its direct children, using their already-derived states:
+
+- every child `checked` → the folder is `checked`
+- every child `unchecked` → the folder is `unchecked`
+- anything else, including a single `indeterminate` child → the folder is `indeterminate`
+
+The walk is iterative (a 10,000-deep chain will not blow the call stack — there is a test for that)
+and memoized, so reading the state of every visible row after a click costs one pass, not one pass
+per row.
+
+## Can I check a folder?
+
+You can click one, and it cascades to every leaf underneath. What you cannot do is store "this
+folder is checked" as a value distinct from "all its current leaves are checked". There is no
+`checkStrictly` mode and no way to make a folder checkable in its own right.
+
+The practical consequence: if a leaf is added under a folder you had checked, the folder becomes
+indeterminate, because the new leaf is not checked. If you need "grant this whole department,
+including people who join later", that is a rule your application owns, not a state this tree can
+hold.
+
+## A worked example, click by click
+
+The canonical dataset, unchecked. `[ ]` is a leaf checkbox, and the right column is what
+`getViewState` returns for each node.
+
+```text
+__root__                       unchecked
+├─ docs                        unchecked
+│  ├─ [ ] README.md            unchecked
+│  └─ [ ] guide.md             unchecked
+└─ src                         unchecked
+   ├─ [ ] engine.ts            unchecked
+   └─ ui                       unchecked
+      ├─ [ ] tree.tsx          unchecked
+      └─ [ ] row.tsx           unchecked
+
+assignments: {}
+```
+
+**1. Click README.md.** One leaf is checked. Its ancestors are now partial.
+
+```text
+__root__                       indeterminate
+├─ docs                        indeterminate
+│  ├─ [x] README.md            checked
+│  └─ [ ] guide.md             unchecked
+└─ src                         unchecked
+   ├─ [ ] engine.ts            unchecked
+   └─ ui                       unchecked
+      ├─ [ ] tree.tsx          unchecked
+      └─ [ ] row.tsx           unchecked
+
+assignments: { readme: true }
+onCheck(["readme"])
+```
+
+**2. Click guide.md.** `docs` now has every child checked, so it promotes to `checked` on its own.
+Nothing wrote a state for `docs`.
+
+```text
+docs                           checked
+├─ [x] README.md               checked
+└─ [x] guide.md                checked
+
+assignments: { readme: true, guide: true }
+onCheck(["readme", "guide"])
+```
+
+**3. Click the `src` folder.** One write cascades through the whole subtree.
+
+```text
+__root__                       checked
+├─ docs                        checked
+│  ├─ [x] README.md            checked
+│  └─ [x] guide.md             checked
+└─ src                         checked
+   ├─ [x] engine.ts            checked
+   └─ ui                       checked
+      ├─ [x] tree.tsx          checked
+      └─ [x] row.tsx           checked
+
+assignments: { readme: true, guide: true, src: true }
+onCheck(["readme", "guide", "engine", "tree", "row"])
+```
+
+Note the asymmetry: five leaves are checked, three entries are stored, and `src`, `ui` and
+`__root__` — the folders — are absent from `onCheck`.
+
+**4. Uncheck tree.tsx.** A single exception is written *below* `src`. `ui` and `src` fall back to
+indeterminate.
+
+```text
+src                            indeterminate
+├─ [x] engine.ts               checked      (inherits src: true)
+└─ ui                          indeterminate
+   ├─ [ ] tree.tsx             unchecked    (explicit tree: false)
+   └─ [x] row.tsx              checked      (inherits src: true)
+
+assignments: { readme: true, guide: true, src: true, tree: false }
+onCheck(["readme", "guide", "engine", "row"])
+```
+
+**5. Uncheck the `src` folder.** The new assignment on `src` replaces everything below it, and the
+now-redundant `tree: false` is dropped. `readme` and `guide` live outside `src`, so they are
+untouched.
+
+```text
+assignments: { readme: true, guide: true, src: false }
+onCheck(["readme", "guide"])
+```
+
+<Callout type="note" title="Order is not part of the contract">
+`onCheck` and `getAllChecked()` return leaf IDs in traversal order, which is deterministic but
+unspecified. Compare them as sets, or sort before you compare.
+</Callout>
+
+## How is the selection actually stored?
+
+Not as a set of checked IDs. As a sparse map of explicit **assignments**: node ID to `true` or
+`false`. A node with no assignment inherits from the nearest ancestor that has one, and a node with
+no assigned ancestor is unchecked.
+
+Three internals do all the work, and they are worth naming because they explain every performance
+number on this page:
+
+- `assignments` — the sparse map. Step 4 above holds four entries for a tree of five leaves; a tree
+  of 50,000 leaves with one checked folder holds exactly one.
+- `findNearestAssignment(id)` — walks up the parent chain until it finds an assignment. This is how
+  `engine.ts` resolves a leaf that was never written to.
+- `toggleFull(id, checked)` — writes one assignment on the node, then drops assignments strictly
+  below it, skipping any subtree that has none in O(1). Cost is the number of exceptions it clears,
+  not the size of the subtree.
+
+That is why cascading a check measures at **1–3 µs** whether the tree holds 1,110 nodes or 1,111,110.
+Checking the root of a million-node tree is one map write.
+
+| Nodes | Cascade a check | Read the full selection |
+| --- | --- | --- |
+| 1,110 | 3 µs | 53 µs |
+| 11,110 | 1 µs | 320 µs |
+| 111,110 | 1 µs | 3.7 ms |
+| 1,111,110 | 1 µs | 75.8 ms |
+
+Median of 5 runs, Node 26 on Apple Silicon. Reproduce with `npm run bench`.
+
+## Why is reading the selection the expensive column?
+
+Because `getAllChecked()` has to materialize the list. One assignment on a folder means 50,000 leaf
+IDs have to be produced, and producing them costs what producing 50,000 strings costs — 3.7 ms at
+100,000 nodes.
+
+Two things soften it:
+
+- The result is cached until the selection changes, so reading it repeatedly is free.
+- Unchecked subtrees with no assignments inside them are skipped wholesale, so a sparse selection
+  over a huge tree costs roughly the size of the result rather than the size of the tree.
+
+And one thing removes it entirely: `onCheck` is optional, and the full list is only built when you
+pass one. If you do not need the expanded list on every click, do not ask for it.
+
+## How do I persist a selection cheaply?
+
+Store the assignments, not the leaves. `getCheckedSubtrees()` returns the sparse map, and
+`setCheckedSubtrees()` restores it.
+
+```tsx
+"use client";
+
+import { useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const KEY = "file-picker-selection";
+
+export function PersistedTree() {
+  const ref = useRef<TreeRef>(null);
+
+  const save = () => {
+    const sparse = ref.current?.getEngine().getCheckedSubtrees() ?? [];
+    // [{ checked: true, id: "src" }] — one entry, however many leaves it covers.
+    localStorage.setItem(KEY, JSON.stringify(sparse));
+  };
+
+  const restore = () => {
+    const raw = localStorage.getItem(KEY);
+    if (raw) ref.current?.getEngine().setCheckedSubtrees(JSON.parse(raw));
+  };
+
+  return (
+    <>
+      <button onClick={save} type="button">
+        Save
+      </button>
+      <button onClick={restore} type="button">
+        Restore
+      </button>
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={ref} />
+    </>
+  );
+}
+```
+
+<Callout type="warn" title="Sparse selections are relative to the structure">
+An entry like `{ checked: true, id: "src" }` means "everything under `src` as it exists right now".
+Restore it against a tree where `src` has gained files and those new files come back checked. If you
+need "exactly these files, and only these", persist `getAllChecked()` instead and accept the size.
+</Callout>
+
+## What are the other ways to change the selection?
+
+Through props, `checkedItems` is the controlled input and `onCheck` the output. Through the engine —
+reachable with `ref.current.getEngine()` — five methods write the selection:
+
+| Method | Effect |
+| --- | --- |
+| `toggle(id, checked)` | Checks or unchecks a node. On a folder, cascades. While a search filter is active, affects only visible leaves. |
+| `setChecked(ids)` | Replaces the selection with an explicit list of checked **leaf** IDs. Folder IDs and unknown IDs are ignored. No-ops when the resulting selection is identical. |
+| `setCheckedSubtrees(entries)` | Restores a sparse selection. |
+| `checkAll()` | Checks every leaf. One write. |
+| `uncheckAll()` | Clears everything. One write. |
+
+`setChecked(["docs", "readme"])` on the canonical dataset yields `["readme"]`, because `docs` is a
+folder and folders are not checkable. No error, no warning — it is filtered.
+
+## What does toggling do while a search filter is active?
+
+It affects only the leaves the filter has left visible. Filter to 12 matches, click the parent
+folder, clear the filter, and exactly those 12 are checked — the hidden siblings are untouched.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+
+engine.setSearchQuery("readme"); // visible rows: docs, README.md
+engine.toggle("docs", true);
+engine.getAllChecked(); // ["readme"] — guide.md was hidden, so it stays unchecked
+
+engine.setSearchQuery("");
+engine.getState("docs"); // "indeterminate"
+```
+
+Folder states follow the same principle while filtering: `getViewState("docs")` summarizes only the
+visible children, so a folder showing 1 of its 2 files reads as `checked` when that one file is
+checked. `getState("docs")` ignores the filter and reports `indeterminate` against the full tree.
+Rows render `getViewState`.
+
+One cost to know: the filtered cascade writes one assignment per visible leaf, so it is *not* the
+constant-time path. Checking a matched folder with 5,000 visible descendants writes 5,000
+assignments. [Search](/docs/search) covers this in full.
+
+## Reading a node's state yourself
+
+```tsx
+"use client";
+
+import { useRef } from "react";
+import {
+  CheckedState,
+  Tree,
+  type TreeDefinition,
+  type TreeRef,
+} from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function Inspector() {
+  const ref = useRef<TreeRef>(null);
+
+  const report = () => {
+    const engine = ref.current?.getEngine();
+    if (!engine) return;
+    console.log(engine.getViewState("src") === CheckedState.Indeterminate);
+    console.log(engine.getAllChecked().length, "of", engine.getLeafCount(), "leaves");
+  };
+
+  return (
+    <>
+      <button onClick={report} type="button">
+        Report
+      </button>
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={ref} />
+    </>
+  );
+}
+```
+
+## Next
+
+- [Controlled and uncontrolled](/docs/controlled-uncontrolled) — driving `checkedItems` yourself
+- [Search](/docs/search) — the filtered-toggle rules in full
+- [Styling](/docs/styling) — turning `data-state` into a visual checkbox

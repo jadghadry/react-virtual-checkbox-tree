@@ -1,0 +1,461 @@
+import { DemoCustomSkin } from "@/components/demo-custom-skin";
+
+export const metadata = {
+  title: "Styling — react-virtual-checkbox-tree",
+  description:
+    "The data-attribute contract, a Tailwind v4 skin, a plain-CSS version, a shadcn/ui checkbox recipe, and notes on focus, motion and touch targets.",
+  alternates: { canonical: "/docs/styling" },
+};
+
+# Styling
+
+The library ships no CSS at all — not a stylesheet you override, none. Rows and the container carry
+data attributes, and everything visual is yours to write.
+
+<DemoCustomSkin />
+
+## The data-attribute contract
+
+These attributes are the API. They are stable, and they are what you write selectors against.
+
+| Attribute | Where | Values | Notes |
+| --- | --- | --- | --- |
+| `data-rvct-tree` | Scroll container | `""` (present) | Also carries `role="tree"`. Use it to scope every other selector. |
+| `data-rvct-row` | Every row | `""` (present) | Also carries `role="treeitem"`. |
+| `data-state` | Every row | `"checked"`, `"unchecked"`, `"indeterminate"` | Always present. Mirrors `aria-checked`. |
+| `data-level` | Every row | `"0"`, `"1"`, `"2"`, … | Depth below the root. Top-level rows are `"0"`. |
+| `data-expanded` | Folders only | `"true"`, `"false"` | **Absent** on leaves — use it to target folders. |
+| `data-leaf` | Leaves only | `""` (present) | **Absent** on folders. |
+| `data-active` | The keyboard-active row | `""` (present) | Absent on every other row. At most one row has it. |
+
+Three class names are also on every row, and one more when you have not replaced the expander:
+
+| Class | Element |
+| --- | --- |
+| `rvct-row` | The row itself, alongside `data-rvct-row`. |
+| `rvct-checkbox` | The span wrapping the checkbox, custom or default. |
+| `rvct-label` | The span wrapping the row body. |
+| `rvct-expander` | The default expander button. Absent when you pass `renderExpander`. |
+
+The container has no class of its own — put yours there with the `className` prop.
+
+<Callout type="warn" title="data-state is a popular name">
+Radix UI, and therefore shadcn/ui, puts its own `data-state` on its components. A bare
+`[data-state="checked"]` selector inside a row will also match the Radix checkbox nested in it.
+Always qualify: `[data-rvct-row][data-state="checked"]`.
+</Callout>
+
+## Why is there no focus ring on the active row?
+
+Because DOM focus never sits on a row. The container is the single tab stop, and the active row is
+tracked with `aria-activedescendant`. That is deliberate: virtualization unmounts rows as you
+scroll, and a row that owned real focus would take the focus with it when it disappeared.
+
+The consequence for CSS: `[data-rvct-row]:focus-visible` will never match. Style `[data-active]`
+instead, and put the outline on the container.
+
+```css
+/* The container is what actually receives focus. */
+[data-rvct-tree]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/* The active row is a data attribute, not a focus state. */
+[data-rvct-row][data-active] {
+  background: color-mix(in oklch, var(--color-accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--color-accent) 45%, transparent);
+}
+```
+
+## What can CSS not change?
+
+Some properties are set as inline styles, which beat any stylesheet rule short of `!important`.
+Change them through props instead.
+
+| Inline on the row | Change it with |
+| --- | --- |
+| `height` | The `estimateSize` prop (number, or `(index) => number`). |
+| `padding-inline-start` | The `indent` prop (pixels per level). |
+| `position`, `top`, `left`, `transform` | Nothing — the virtualizer owns them. |
+| `display: flex`, `gap: 4px`, `align-items: center` | Wrap your own layout inside `renderItem`. |
+| `width: max-content`, `min-width: 100%` | Nothing — this is what lets long labels scroll horizontally while the hover highlight still spans the full width. |
+
+The container's inline styles are `height`, `overflow: auto` and `position: relative`, and your
+`style` prop is merged **after** them, so `style` does win there.
+
+Everything else on a row — background, color, border-radius, box-shadow, padding-right, outline,
+font — is untouched and yours.
+
+## A copy-paste Tailwind v4 skin
+
+Tailwind v4 is configured in CSS, so the skin is CSS too. Paste this after `@import "tailwindcss"`
+in your global stylesheet, then wrap the tree in `<div className="rvct">`.
+
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-rvct-surface: oklch(0.185 0 0);
+  --color-rvct-hover: oklch(0.215 0 0);
+  --color-rvct-border: oklch(0.36 0 0);
+  --color-rvct-fg: oklch(0.985 0 0);
+  --color-rvct-muted: oklch(0.68 0 0);
+  --color-rvct-accent: oklch(0.72 0.16 250);
+}
+
+.rvct [data-rvct-tree] {
+  background: var(--color-rvct-surface);
+  border: 1px solid color-mix(in oklch, var(--color-rvct-border) 60%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.375rem 0.5rem;
+}
+
+.rvct [data-rvct-tree]:focus-visible {
+  outline: 2px solid var(--color-rvct-accent);
+  outline-offset: -2px;
+}
+
+.rvct [data-rvct-row] {
+  border-radius: 4px;
+  padding-right: 8px;
+  transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.rvct [data-rvct-row]:hover {
+  background: var(--color-rvct-hover);
+}
+
+.rvct [data-rvct-row][data-active] {
+  background: color-mix(in oklch, var(--color-rvct-accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--color-rvct-accent) 45%, transparent);
+}
+
+/* Folders read as structure, leaves as content. */
+.rvct [data-rvct-row]:not([data-leaf]) .rvct-label {
+  color: var(--color-rvct-fg);
+  font-weight: 500;
+}
+
+.rvct [data-rvct-row][data-leaf] .rvct-label {
+  color: var(--color-rvct-muted);
+}
+
+.rvct [data-rvct-row][data-state="checked"] .rvct-label {
+  color: var(--color-rvct-fg);
+}
+
+.rvct .rvct-label {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.rvct .rvct-expander {
+  background: none;
+  border: 0;
+  color: var(--color-rvct-muted);
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rvct [data-rvct-row] {
+    transition-duration: 0.01ms;
+  }
+}
+```
+
+And the component:
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function App() {
+  return (
+    <div className="rvct">
+      <Tree aria-label="Project files" data={fileTree} estimateSize={28} height={320} />
+    </div>
+  );
+}
+```
+
+Utility classes still work for anything that does not need a descendant selector — the container
+takes `className` directly:
+
+```tsx
+<Tree
+  aria-label="Project files"
+  className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+  data={fileTree}
+  height={320}
+/>
+```
+
+What utilities cannot do is reach a row, because rows are rendered by the library. Row-level styling
+is always a selector on `[data-rvct-row]`.
+
+## The same thing in plain CSS
+
+No build step, no tokens, no `color-mix`. Drop this in any stylesheet and wrap the tree in
+`<div class="rvct">`.
+
+```css
+.rvct [data-rvct-tree] {
+  background: #ffffff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.rvct [data-rvct-tree]:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
+}
+
+.rvct [data-rvct-row] {
+  border-radius: 4px;
+  color: #404040;
+  font-size: 13px;
+  padding-right: 8px;
+  transition: background-color 120ms ease;
+}
+
+.rvct [data-rvct-row]:hover {
+  background: #f5f5f5;
+}
+
+.rvct [data-rvct-row][data-active] {
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 1px #93c5fd;
+}
+
+.rvct [data-rvct-row]:not([data-leaf]) {
+  color: #171717;
+  font-weight: 500;
+}
+
+.rvct [data-rvct-row][data-state="indeterminate"] .rvct-label {
+  font-style: italic;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rvct [data-rvct-row] {
+    transition-duration: 0.01ms;
+  }
+}
+```
+
+## How do I use the shadcn/ui checkbox?
+
+shadcn/ui's `Checkbox` wraps Radix, whose `checked` prop accepts `boolean | "indeterminate"`. That
+maps one-to-one onto `checkedState`, so the adapter is three lines. Spread `a11yProps` onto it —
+Radix renders a real `button`, and without that spread every row gains a tab stop and a second
+announcement.
+
+```tsx
+"use client";
+
+import { ChevronRight } from "lucide-react";
+import {
+  CheckedState,
+  Tree,
+  type TreeCheckboxRenderProps,
+  type TreeDefinition,
+  type TreeExpanderRenderProps,
+} from "react-virtual-checkbox-tree";
+
+import { Checkbox } from "@/components/ui/checkbox";
+import { cn } from "@/lib/utils";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+function TreeCheckbox({ a11yProps, checkedState, onChange }: TreeCheckboxRenderProps) {
+  return (
+    <Checkbox
+      {...a11yProps}
+      checked={
+        checkedState === CheckedState.Indeterminate
+          ? "indeterminate"
+          : checkedState === CheckedState.Checked
+      }
+      className="size-4"
+      onCheckedChange={(next) => onChange(next === true)}
+    />
+  );
+}
+
+function TreeExpander({ a11yProps, isExpanded, onToggle }: TreeExpanderRenderProps) {
+  return (
+    <button
+      {...a11yProps}
+      className={cn(
+        "inline-flex size-4 items-center justify-center text-muted-foreground transition-transform",
+        isExpanded && "rotate-90"
+      )}
+      onClick={(event) => {
+        event.stopPropagation(); // the row would toggle the folder straight back
+        onToggle();
+      }}
+      type="button"
+    >
+      <ChevronRight className="size-3.5" />
+    </button>
+  );
+}
+
+export default function App() {
+  return (
+    <Tree
+      aria-label="Project files"
+      className="rounded-md border bg-background"
+      data={fileTree}
+      estimateSize={32}
+      height={360}
+      renderCheckbox={TreeCheckbox}
+      renderExpander={TreeExpander}
+    />
+  );
+}
+```
+
+Two details worth knowing about this recipe:
+
+- `onCheckedChange` receives `boolean | "indeterminate"`, which is why the handler is
+  `next === true` rather than `next`. Radix never sends `"indeterminate"` from a click, but the type
+  allows it.
+- Because Radix's `Checkbox` is a `button`, its own `data-state` sits inside the row. Qualify your
+  row selectors with `[data-rvct-row]` so the two do not collide.
+
+## How do I get a 44px touch target?
+
+Set `estimateSize={44}`. The row is the hit area — it spans the full width of the container because
+of `min-width: 100%` — so its height is the whole story.
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+function useCoarsePointer() {
+  const [coarse, setCoarse] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia("(pointer: coarse)");
+    setCoarse(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setCoarse(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  return coarse;
+}
+
+export default function App() {
+  const coarse = useCoarsePointer();
+
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      estimateSize={coarse ? 44 : 32}
+      height={400}
+      indent={coarse ? 24 : 20}
+    />
+  );
+}
+```
+
+44 CSS pixels is Apple's Human Interface Guidelines minimum. WCAG 2.2 asks for 24×24 CSS px at level
+AA (2.5.8) and 44×44 at AAA (2.5.5), so 44 clears both. The default of 32 clears AA but not AAA.
+
+<Callout type="tip" title="estimateSize takes a function too">
+`estimateSize={(index) => (index === 0 ? 48 : 32)}` gives one row a different height. It is called
+with the row index in the current flattened view, so it changes meaning when a search filter is
+active — prefer a constant unless the variation is genuinely positional.
+</Callout>
+
+## Respecting prefers-reduced-motion
+
+The only motion worth having here is a background fade on hover and, if you add one, a chevron
+rotation. Both should be dropped under `prefers-reduced-motion`.
+
+```css
+.rvct [data-rvct-row],
+.rvct .rvct-expander {
+  transition-duration: 120ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rvct [data-rvct-row],
+  .rvct .rvct-expander {
+    transition-duration: 0.01ms;
+  }
+}
+```
+
+Nothing inside the library animates, so there is no built-in motion to opt out of — only whatever
+you add.
+
+## Which CSS variables does this site's skin use?
+
+None of these come from the library. They are this site's design tokens, listed because the skins
+above reference them and because the names make the roles obvious.
+
+| Variable | Role in the tree skin |
+| --- | --- |
+| `--color-bg` | Page behind the tree. |
+| `--color-surface` | The tree's own background. |
+| `--color-surface-2` | Row hover background. |
+| `--color-border` | Hairline around the scroll container. |
+| `--color-border-strong` | The unchecked checkbox border. |
+| `--color-fg` | Folder labels, and any checked label. |
+| `--color-muted` | Unchecked leaf labels. |
+| `--color-faint` | Secondary text inside a row, and the expander glyph. |
+| `--color-accent` | The active row, the checked box fill, the focus ring. |
+| `--color-accent-fg` | The check mark drawn on the accent fill. |
+| `--color-ok` | Positive counters in the demo status bars. |
+| `--color-warn` | Warning callouts. |
+
+Define your own with whatever names you like; the library reads none of them.
+
+## Next
+
+- [Render props](/docs/rendering) — replacing the row body, the checkbox and the expander.
+- [Virtualization](/docs/virtualization) — how `estimateSize` and `overscan` interact.
+- [Accessibility](/docs/accessibility) — why the active row is a data attribute rather than focus.

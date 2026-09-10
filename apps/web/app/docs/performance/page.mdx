@@ -1,0 +1,420 @@
+export const metadata = {
+  title: "Performance — react-virtual-checkbox-tree",
+  description:
+    "Measured timings from 1,110 to 1,111,110 nodes, why a cascade is constant time while building is linear, and what to do at each scale.",
+  alternates: { canonical: "/docs/performance" },
+};
+
+# Performance
+
+Here are the measured numbers. Every figure on this site comes from one script, and you can run it
+yourself in about a minute.
+
+| Nodes | Build engine | Flatten rows | Cascade a check | Read selection | Search keystroke |
+| --- | --- | --- | --- | --- | --- |
+| 1,110 | 1.3 ms | 0.3 ms | 3 µs | 53 µs | 142 µs |
+| 11,110 | 9.6 ms | 2.2 ms | 1 µs | 320 µs | 957 µs |
+| 111,110 | 115 ms | 25 ms | 1 µs | 3.7 ms | 11.5 ms |
+| 1,111,110 | 1,955 ms | 684 ms | 1 µs | 75.8 ms | 169 ms |
+
+Two columns are flat and three are not. That difference is the whole story of how this library is
+built, and the rest of this page is about it.
+
+## How were these measured?
+
+Median of 5 runs, Node 26 on Apple Silicon, against the **built ESM bundle** rather than the
+TypeScript source — so the numbers reflect the code you install, after bundling and minification.
+
+```bash
+git clone https://github.com/jadghadry/react-virtual-checkbox-tree
+cd react-virtual-checkbox-tree
+npm install
+npm run build --workspace react-virtual-checkbox-tree
+npm run bench --workspace react-virtual-checkbox-tree
+```
+
+The script is `packages/react-virtual-checkbox-tree/benchmarks/engine.bench.mjs`. It builds a
+synthetic tree with a branching factor of 10 at each of four target leaf counts — 1,000, 10,000,
+100,000 and 1,000,000 — which is where the odd-looking node totals come from: a 1,000-leaf tree with
+a fan-out of 10 has 1,110 nodes once you count the folders.
+
+Each measurement warms up once, then runs five times, and reports the median. Building the engine is
+measured over three runs rather than five, because at a million nodes it is the slowest thing in the
+suite by two orders of magnitude.
+
+<Callout type="note" title="These are engine numbers, not frame times">
+Everything here measures the headless `Engine`, in Node, with no renderer attached. That is
+deliberate — it isolates the library's own cost from React, from your row components, and from
+whatever the browser is doing. What the renderer adds on top is bounded by the number of rows on
+screen, not the size of the tree.
+</Callout>
+
+## What does each column measure?
+
+**Build engine** — `new Engine(data)`. One pass over every key in your `data` map: register labels,
+wire up the children arrays (dropping IDs with no entry of their own), build the parent map, and
+normalize every label for search. In development it also walks the whole graph once to assert there
+are no cycles — and since the benchmark script runs without `NODE_ENV=production`, that check is
+inside the numbers above rather than excluded from them. Linear in node count, and it happens once
+per `<Tree>` mount, plus once more every time `data` changes identity.
+
+**Flatten rows** — `getVisibleItems()` with every folder expanded, which is the worst case. An
+iterative depth-first walk producing one `VisibleItem` per visible row, with `level`, `posInSet` and
+`setSize` computed as it goes. Linear in the number of *visible* rows, and cached until something
+changes which rows are visible. Collapsed folders cost nothing; the 684 ms at a million nodes is the
+price of having expanded all of them.
+
+**Cascade a check** — `engine.toggle("__root__", true)`, i.e. checking the single node that owns
+every leaf in the tree. Constant, and that is not a rounding artifact — see below.
+
+**Read selection** — `getAllChecked()` with the entire tree checked, which is the worst case: it has
+to write every checked leaf ID into a fresh array. Linear in the *size of the result*, not the size
+of the tree. A tree where four files are checked reads in microseconds no matter how many nodes it
+has.
+
+**Search keystroke** — one `setSearchQuery(...)` call: normalize the query, test it against every
+label, walk each match's ancestor chain, and rebuild the filtered children map. Linear in node count.
+
+## Why doesn't the cascade grow?
+
+Because the selection is not stored as a set of checked IDs. It is stored as a sparse map of explicit
+*assignments*, and everything else is derived.
+
+Checking `src` in the canonical file tree does not write four entries. It writes one:
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+engine.toggle("src", true);
+
+engine.getCheckedSubtrees();
+// [{ checked: true, id: "src" }]      <- one entry
+
+engine.getAllChecked().sort();
+// ["engine", "row", "tree"]          <- derived on demand
+```
+
+A node's state is found by walking up to the nearest ancestor that has an assignment. `tree.tsx` has
+no assignment of its own, so it inherits `src`'s. That is why checking a folder of 50,000 leaves is
+one `Map.set` and a handful of counter increments up the ancestor chain — work proportional to the
+tree's *depth*, which is single digits, not to its size.
+
+The one thing a toggle has to clean up is stale assignments below the node, so that an earlier click
+on `tree.tsx` does not survive a later click on `src`. The engine keeps a running count of how many
+assignments live inside each subtree, so a branch with none is skipped in constant time instead of
+being traversed. Clearing costs the number of assignments actually cleared, not the size of the
+subtree.
+
+Contrast that with the two columns that do grow:
+
+- **Build** has to look at every key you handed it. There is no way to be sub-linear about reading
+  your data.
+- **Read selection** has to produce every ID in the answer. Materializing 1,111,110 strings into an
+  array takes 75.8 ms because writing a million array slots takes 75.8 ms.
+
+One is the cost of accepting the input. The other is the cost of producing the output. Neither is
+work the library can avoid — but you can avoid *asking* for the second one, which is the single most
+useful optimization on this page.
+
+## What should I do at each scale?
+
+### Up to about 1,000 nodes
+
+Nothing. Every operation is sub-millisecond. Pass `data` inline, re-render freely, wire `onCheck`
+straight into `useState`. Virtualization is still doing its job, but you would not notice its
+absence.
+
+### Around 10,000 nodes
+
+Memoize `data`. A 9.6 ms rebuild is invisible once; it is not invisible on every keystroke in a form
+that happens to contain the tree.
+
+```tsx
+"use client";
+
+import { useMemo, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+type Row = { id: string; name: string; parentId: null | string };
+
+function buildTree(rows: Row[]): TreeDefinition {
+  const data: TreeDefinition = {
+    __root__: { id: "__root__", label: "root", children: [] },
+  };
+  for (const row of rows) data[row.id] = { id: row.id, label: row.name };
+  for (const row of rows) {
+    const parent = data[row.parentId ?? "__root__"];
+    if (parent) (parent.children ??= []).push(row.id);
+  }
+  return data;
+}
+
+export function ProjectTree({ rows }: { rows: Row[] }) {
+  const [query, setQuery] = useState("");
+
+  // Without useMemo this object is new on every render, and every render
+  // re-runs engine.setData() over the whole tree.
+  const data = useMemo(() => buildTree(rows), [rows]);
+
+  return (
+    <>
+      <input
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files…"
+        type="search"
+        value={query}
+      />
+      <Tree aria-label="Project files" data={data} height={480} searchQuery={query} />
+    </>
+  );
+}
+```
+
+Passing a new `data` object is safe — selection, expansion and the active query all survive, because
+the structure is swapped in place through `engine.setData()`. Safe is not the same as free: that call
+rebuilds the label map, the children map and the parent map every time.
+
+### Around 100,000 nodes
+
+Three changes, in order of payoff.
+
+**1. Defer the search query.** A search keystroke costs 11.5 ms of engine work at this size, plus a
+re-render. Typing at speed queues those up and the input stops feeling attached to the keyboard.
+`useDeferredValue` keeps the input responsive and lets React drop intermediate results:
+
+```tsx
+"use client";
+
+import { useDeferredValue, useMemo, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+export function SearchableTree({ data }: { data: TreeDefinition }) {
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+
+  return (
+    <>
+      <input
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files…"
+        type="search"
+        value={query}
+      />
+      <Tree
+        aria-label="Project files"
+        data={data}
+        height={480}
+        minSearchChars={3}
+        searchQuery={deferredQuery}
+      />
+    </>
+  );
+}
+```
+
+`minSearchChars` defaults to `3` and is the cheaper half of the same idea: a one- or two-character
+query never runs at all, which is exactly the range where a filter would match most of the tree
+anyway.
+
+**2. Stop materializing the selection on every click.** `onCheck` is handed the result of
+`getAllChecked()`, so if the user checks the root you pay 3.7 ms and allocate a 100,000-element array
+— on every single toggle. Read the sparse form instead, through the ref:
+
+```tsx
+"use client";
+
+import { useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+export function BigTree({ data }: { data: TreeDefinition }) {
+  const treeRef = useRef<TreeRef>(null);
+  const [saved, setSaved] = useState<Array<{ checked: boolean; id: string }>>([]);
+
+  // Note: no onCheck prop. Nothing materializes the full list.
+  return (
+    <>
+      <Tree aria-label="Project files" data={data} height={480} ref={treeRef} />
+      <button
+        onClick={() => setSaved(treeRef.current?.getEngine().getCheckedSubtrees() ?? [])}
+        type="button"
+      >
+        Save selection
+      </button>
+      <p>{saved.length} assignments stored</p>
+    </>
+  );
+}
+```
+
+`getCheckedSubtrees()` returns the assignments themselves — one entry for a checked folder, however
+many leaves are under it. Restore it later with `setCheckedSubtrees()`. The
+[persist-a-selection recipe](/docs/recipes/persist-selection) covers the round trip.
+
+Omitting `onCheck` entirely is what makes this work: the component calls it as
+`onCheckRef.current?.(engine.getAllChecked())`, and an optional call short-circuits before evaluating
+its argument. No handler, no call, no list. Read the selection when you actually need it — on submit, not on
+every click.
+
+**3. Do not `expandAll()` casually.** It is one call and it re-flattens the entire tree: 25 ms at
+this size, which is a dropped frame. It is fine on a button press. It is not fine in an effect that
+runs on every data change, and remember that the `*` key is wired to it.
+
+### Around 1,000,000 nodes
+
+Be honest with yourself about the build. `new Engine(data)` takes roughly **two seconds** at this
+size, and it is synchronous — on the main thread that is two seconds of a frozen tab, and it happens
+during the first render of `<Tree>`.
+
+There is no way to make it fast, so put it somewhere the user is not waiting on it:
+
+- **Paginate or scope the data.** A million rows in one picker is almost always a data-modeling
+  problem wearing a performance costume. Filter server-side, or load one top-level branch at a time
+  and grow `data` as pages arrive — selection and expansion survive each swap. See
+  [loading data in pages](/docs/recipes/async-children).
+- **Build in a worker.** The `react-virtual-checkbox-tree/engine` entry point has no React
+  dependency and no virtualizer in it, so it runs in a Web Worker or in Node without dragging the
+  renderer along. Build the map there, transfer it, and hand the finished object to `<Tree>`.
+- **Show something while it builds.** If you must build on the main thread, render a skeleton first
+  and mount the tree in a `startTransition` so React can paint before it blocks.
+- **Never `expandAll()`.** 684 ms to flatten a fully-expanded million-node tree. The search path is
+  in the same territory at 169 ms per keystroke, so raise `minSearchChars` and defer the query as
+  above.
+
+The parts that stay fast stay fast: checking the root is still 1 µs, and the renderer still mounts
+only the rows that fit the viewport.
+
+## How do I measure it in my own app?
+
+Two measurements answer most questions. Neither needs a profiler.
+
+**How long does the engine take on my real data?** Wrap the call, in a Node script or in the browser
+console:
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import { data } from "./my-tree";
+
+const t0 = performance.now();
+const engine = new Engine(data);
+console.log(`build: ${(performance.now() - t0).toFixed(1)} ms`, engine.getNodeCount(), "nodes");
+
+engine.expandAll();
+const t1 = performance.now();
+const rows = engine.getVisibleItems();
+console.log(`flatten: ${(performance.now() - t1).toFixed(1)} ms`, rows.length, "rows");
+
+engine.checkAll();
+const t2 = performance.now();
+const checked = engine.getAllChecked();
+console.log(`read: ${(performance.now() - t2).toFixed(1)} ms`, checked.length, "leaves");
+```
+
+Run it against production data, not a fixture. The shape matters as much as the count — a tree with
+one 200,000-child folder behaves differently from a balanced one.
+
+**Is virtualization actually working?** Count the mounted rows in the browser console while the tree
+is on screen:
+
+```js
+document.querySelectorAll("[data-rvct-row]").length;
+// Should be roughly (container height / row height) + 2 × overscan.
+// With height 480, estimateSize 32 and the default overscan of 8: about 31.
+```
+
+If that number tracks the size of your data, something is rendering outside the virtualizer — an
+`overscan` set absurdly high, or your own component rendering all of `data` alongside the tree. If it
+is `0`, the scroll container has no height: `<Tree>` defaults to `height: "100%"` and a parent with
+no height of its own collapses it to nothing.
+
+While you are in there, `document.querySelectorAll("[data-rvct-tree]").length` should be `1` per
+tree, and `[data-state="indeterminate"]` will show you exactly which folders are currently mixed.
+
+## How should I generate large test fixtures?
+
+From a seed, not from a JSON file. A six-figure tree serialized as JSON is megabytes of payload that
+has to be downloaded, parsed and held in memory before the engine ever sees it; the function that
+generates the same tree deterministically is a few hundred bytes of JavaScript.
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+/** Deterministic PRNG, so the server and the client build the same tree. */
+function mulberry32(seed: number) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function generateTestTree(targetNodes: number, seed = 42): TreeDefinition {
+  const rand = mulberry32(seed);
+  const data: TreeDefinition = {
+    __root__: { id: "__root__", label: "root", children: [] },
+  };
+
+  let counter = 0;
+  const queue: Array<{ depth: number; id: string }> = [{ depth: 0, id: "__root__" }];
+
+  while (queue.length > 0 && counter < targetNodes) {
+    const parent = queue.shift()!;
+    const fanOut = 2 + Math.floor(rand() * 12);
+
+    for (let i = 0; i < fanOut && counter < targetNodes; i++) {
+      const id = `n${counter++}`;
+      const isFolder = parent.depth < 5 && rand() < 0.3;
+      data[id] = isFolder
+        ? { id, label: `dir-${id}`, children: [] }
+        : { id, label: `file-${id}.ts` };
+      (data[parent.id].children ??= []).push(id);
+      if (isFolder) queue.push({ depth: parent.depth + 1, id });
+    }
+  }
+
+  return data;
+}
+```
+
+Two properties make this useful rather than just small: it is **deterministic**, so a server render
+and a client render agree and you do not get a hydration mismatch, and it is **lumpy** — a few very
+wide folders, some deep chains. A perfectly balanced tree hides the cases that actually hurt.
+
+## Where the renderer's time goes
+
+The engine is only half the picture. On the React side, three things keep the cost bounded:
+
+- **Row count is bounded by the viewport.** `@tanstack/react-virtual` mounts the rows that fit plus
+  `overscan` above and below. A 200,000-node tree mounts the same handful of DOM elements as a
+  20-node one.
+- **Rows are memoized.** Each row is a `memo`'d component keyed by node ID, so scrolling re-renders
+  only the rows that entered or left the window.
+- **A selection change does not re-flatten.** The engine tracks layout and selection with separate
+  version counters, and checking a box bumps only the second. The flattened row array keeps its
+  identity, so the virtualizer has nothing to recompute — clicking a checkbox re-renders rows, not
+  the list.
+
+The practical consequence: the thing to watch in a profile is your own `renderItem`. It runs once per
+visible row per render, and it is the only part of the row that this library does not control.
+
+## Next
+
+- [Virtualization](/docs/virtualization) — row heights, overscan, and sizing the scroll container
+- [Checkbox semantics](/docs/checkbox-semantics) — how the sparse assignment model works in detail
+- [FAQ](/docs/faq) — the short version of most of this page

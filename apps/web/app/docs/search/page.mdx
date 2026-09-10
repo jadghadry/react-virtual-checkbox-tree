@@ -1,0 +1,498 @@
+export const metadata = {
+  title: "Search — react-virtual-checkbox-tree",
+  description:
+    "Ancestor-aware filtering, searchScope, diacritic-insensitive matching, restored expansion, and why a filtered toggle checks only visible leaves.",
+  alternates: { canonical: "/docs/search" },
+};
+
+# Search
+
+Search filters the visible rows down to the nodes whose label matches, plus every ancestor needed to
+reach them. It is a view filter: nothing is removed from `data`, and nothing about the selection
+changes.
+
+The tree ships no search input. You own the query and pass it in through `searchQuery`.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function SearchableTree() {
+  const [query, setQuery] = useState("");
+
+  return (
+    <>
+      <input
+        aria-label="Filter files"
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files"
+        value={query}
+      />
+      <Tree aria-label="Project files" data={fileTree} height={320} searchQuery={query} />
+    </>
+  );
+}
+```
+
+## What counts as a match?
+
+A case-insensitive, diacritic-insensitive **substring** test against `label`. Nothing more: no fuzzy
+matching, no tokenizing, no scoring, no matching against your `data` blob.
+
+Both the label and the query are normalized the same way — Unicode NFD, combining marks stripped,
+lowercased — so `resume` matches `Résumé.pdf`, and `README` matches `readme`.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+
+const engine = new Engine({
+  __root__: { id: "__root__", label: "root", children: ["cv"] },
+  cv: { id: "cv", label: "Résumé.pdf" },
+});
+
+engine.setSearchQuery("resume");
+engine.getVisibleItems().map((row) => row.id); // ["cv"]
+```
+
+## What shows up in the filtered view?
+
+Every match, plus each match's ancestors so the match is reachable. Searching `readme` against the
+canonical dataset leaves two rows:
+
+```text
+docs                  ancestor of a match
+└─ README.md          match
+
+(guide.md, src/, engine.ts, ui/, tree.tsx and row.tsx are gone)
+```
+
+Ancestors are auto-expanded so that every match is on screen without any clicking.
+
+## What does `searchScope` do?
+
+It decides which labels are eligible to match.
+
+| Value | Matches | A folder appears because… |
+| --- | --- | --- |
+| `"all"` (default) | every node, folders included | it matched, or it contains a match |
+| `"leaves"` | leaf labels only | it contains a match — never because it is one |
+
+Under the default, searching `docs` matches the folder itself:
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+
+engine.setSearchQuery("docs");
+engine.getMatchCount(); // 1
+engine.getVisibleItems().map((row) => row.id); // ["docs"] — collapsed
+
+engine.toggle("docs", true);
+engine.getAllChecked().sort(); // ["guide", "readme"] — the whole subtree
+```
+
+Under `searchScope="leaves"` the same query matches nothing, because no file is called `docs`:
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree, { searchScope: "leaves" });
+engine.setSearchQuery("docs");
+engine.getMatchCount(); // 0
+```
+
+Use `"leaves"` when folders are containers your users never select — a category tree over a product
+catalogue, for instance, where matching a category name would drag in a thousand irrelevant items.
+Use the default when folder names are part of what people search for, which is true of anything
+shaped like a file tree.
+
+### A matching folder carries its whole subtree
+
+When a folder matches, its entire subtree joins the filtered view. Every descendant counts as
+matching, because their parent did.
+
+That is what makes the previous example work: `docs` matched, so checking it selects `README.md` and
+`guide.md`, even though neither of those filenames contains "docs".
+
+<Callout type="note" title="A matching folder stays collapsed">
+Ancestors of a match are auto-expanded. A folder that *is* the match is not. Auto-expanding a
+matched folder with 50,000 descendants would put all 50,000 back on screen and undo the filtering
+you just asked for. Click it to open it — the subtree is right there.
+</Callout>
+
+## Why is there a minimum query length?
+
+Because a one-character query against a large tree matches nearly everything, and the filter then
+costs a full pass over every label to produce a view no more useful than the unfiltered one.
+`minSearchChars` defaults to `3`; below it, search stays inactive and the tree renders normally.
+
+Lower it with `minSearchChars={2}`, or raise it with `minSearchChars={5}`; the minimum accepted
+value is `1`, and anything below that is clamped to it.
+
+The floor is compared against the normalized query, which is **not** trimmed — a trailing space
+counts as a character. Trim the value yourself if that matters:
+`searchQuery={query.trim()}`.
+
+Changing `minSearchChars` re-applies the current query immediately. A query of `"readme"` typed while
+the floor is `8` sits inactive; lower the floor to `3` and the filter turns on without the user
+touching the input again.
+
+## What happens to expansion?
+
+Activating search snapshots whatever the user had open, then replaces the expansion with "the
+ancestors of every match". Clearing the query **restores the snapshot**.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+engine.setExpanded(["docs", "src", "ui"]);
+
+engine.setSearchQuery("readme");
+engine.getVisibleItems().map((row) => row.id); // ["docs", "readme"]
+
+engine.setSearchQuery("");
+engine.getVisibleItems().map((row) => row.id);
+// ["docs", "readme", "guide", "src", "engine", "ui", "tree", "row"]
+// — exactly the three folders the user had open, back again
+```
+
+This is the behavior people miss when it is absent: type three characters, find nothing useful, clear
+the box, and discover the tree you had carefully unfolded is now fully collapsed. The snapshot is
+taken when search *activates*, so editing a query while filtered keeps the original snapshot rather
+than overwriting it with the filter's own expansion.
+
+Dropping back below `minSearchChars` counts as clearing, and restores it too.
+
+## Toggling while filtered checks only the visible leaves
+
+This is the library's most distinctive behavior, and the one worth reading twice: while a filter is
+active, checking a folder affects **only the leaves the filter has left visible**. Hidden siblings
+are untouched.
+
+Filter to 12 results, click the parent folder, clear the filter, and exactly those 12 are checked.
+That is almost always what the user meant — they were looking at 12 things and clicked "all of
+these".
+
+### Worked example
+
+Start from the canonical dataset with nothing checked, and filter to `readme`.
+
+```text
+Query: "readme"
+
+docs                    indeterminate-capable folder, 1 of its 2 files visible
+└─ [ ] README.md        visible match
+                        (guide.md is hidden)
+```
+
+Click the `docs` checkbox.
+
+```text
+docs                    getViewState → "checked"   (1 of 1 visible child is checked)
+└─ [x] README.md        checked
+
+assignments: { readme: true }
+onCheck(["readme"])
+```
+
+The folder reads as checked because, in the view the user is looking at, everything under it is
+checked. Ask the engine about the full tree and it says otherwise: `getViewState("docs")` returns
+`"checked"` (visible children only) while `getState("docs")` returns `"indeterminate"` (the whole
+tree). The complete snippet is at the end of this section.
+
+Now clear the query.
+
+```text
+docs                    indeterminate
+├─ [x] README.md        checked
+└─ [ ] guide.md         unchecked   — never touched
+
+getAllChecked() → ["readme"]
+```
+
+Rows render `getViewState`, so what a user sees while filtering summarizes what they can see. The
+moment the filter clears, every folder goes back to summarizing its real contents.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+
+engine.setSearchQuery("readme");
+engine.toggle("docs", true);
+engine.getAllChecked(); // ["readme"]
+
+engine.setSearchQuery("");
+engine.getAllChecked(); // ["readme"] — guide.md stayed out of it
+engine.getState("docs"); // "indeterminate"
+```
+
+<Callout type="warn" title="The filtered cascade is not the constant-time path">
+Outside search, checking a folder writes one assignment regardless of its size — 1–3 µs at any
+scale. While filtered, the engine has to write one assignment per visible leaf, because "the visible
+subset" is not expressible as a single subtree assignment. Checking a matched folder with 5,000
+visible descendants writes 5,000 entries. That is a deliberate trade: correctness of the user's
+intent over the fast path.
+</Callout>
+
+## How do I show a result count?
+
+`getMatchCount()` returns the number of matching **nodes** — not rows, and not leaves — and `0` when
+search is inactive. Read it from the engine through the ref.
+
+```tsx
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function SearchWithCount() {
+  const ref = useRef<TreeRef>(null);
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState<null | number>(null);
+
+  // The tree applies `searchQuery` in its own effect, and child effects flush
+  // before the parent's — so by the time this runs, the filter is up to date.
+  useEffect(() => {
+    const engine = ref.current?.getEngine();
+    setMatches(engine?.isSearchActive() ? engine.getMatchCount() : null);
+  }, [query]);
+
+  return (
+    <>
+      <input
+        aria-label="Filter files"
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files"
+        value={query}
+      />
+      {matches !== null && (
+        <p>{matches === 0 ? "Nothing matches that query." : `${matches} matches`}</p>
+      )}
+      <Tree
+        aria-label="Project files"
+        data={fileTree}
+        height={320}
+        ref={ref}
+        searchQuery={query}
+      />
+    </>
+  );
+}
+```
+
+A query that matches nothing renders **zero rows** — an empty scroll container, not a message. The
+empty state is yours to write, as above. Keep the tree mounted while you show it: unmounting throws
+away the engine, and with it the selection and the expansion snapshot.
+
+## How do I highlight the matched text?
+
+With `renderItem`. The tree does not mark up matches for you, and the query is already in your hands.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+function highlight(label: string, query: string) {
+  if (query.length < 3) return label;
+  const at = label.toLowerCase().indexOf(query.toLowerCase());
+  if (at < 0) return label;
+  return (
+    <>
+      {label.slice(0, at)}
+      <mark>{label.slice(at, at + query.length)}</mark>
+      {label.slice(at + query.length)}
+    </>
+  );
+}
+
+export function HighlightedSearch() {
+  const [query, setQuery] = useState("");
+
+  return (
+    <>
+      <input
+        aria-label="Filter files"
+        onChange={(event) => setQuery(event.target.value)}
+        value={query}
+      />
+      <Tree
+        aria-label="Project files"
+        data={fileTree}
+        height={320}
+        renderItem={({ item }) => highlight(item.label, query)}
+        searchQuery={query}
+      />
+    </>
+  );
+}
+```
+
+The engine strips diacritics before matching and this helper does not, so `resume` will filter to
+`Résumé.pdf` without highlighting inside it. Normalize both sides the same way if that gap matters
+to you.
+
+## Do I need to debounce?
+
+Usually not, and here is the number to decide with. One keystroke re-runs the whole filter:
+
+| Nodes | Time per keystroke |
+| --- | --- |
+| 1,110 | 142 µs |
+| 11,110 | 957 µs |
+| 111,110 | 11.5 ms |
+| 1,111,110 | 169 ms |
+
+Median of 5 runs, Node 26 on Apple Silicon.
+
+Below about 10,000 nodes, type freely. At 100,000 the filter alone eats most of a frame before React
+has re-rendered anything, and fast typists will feel it. At a million, debounce or accept a stutter.
+
+The React-shaped fix is `useDeferredValue`: the input stays responsive because it updates on its own
+state, while the tree re-filters on the deferred copy.
+
+```tsx
+"use client";
+
+import { useDeferredValue, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function DeferredSearch() {
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const stale = query !== deferredQuery;
+
+  return (
+    <>
+      <input
+        aria-label="Filter files"
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files"
+        value={query}
+      />
+      <div style={{ opacity: stale ? 0.6 : 1, transition: "opacity 120ms" }}>
+        <Tree
+          aria-label="Project files"
+          data={fileTree}
+          height={320}
+          searchQuery={deferredQuery}
+        />
+      </div>
+    </>
+  );
+}
+```
+
+A plain debounce works too, and is the better choice if the query also hits the network. Both keep
+the input at 60 fps; neither makes the filter itself faster.
+
+## Next
+
+- [Checkbox semantics](/docs/checkbox-semantics) — the selection model the filtered toggle writes into
+- [Virtualization](/docs/virtualization) — why only the visible matches are in the DOM

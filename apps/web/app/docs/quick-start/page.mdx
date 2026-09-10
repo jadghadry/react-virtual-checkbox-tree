@@ -1,0 +1,403 @@
+export const metadata = {
+  title: "Quick start — react-virtual-checkbox-tree",
+  description:
+    "A complete working checkbox tree in one file, then built up in three steps: render it, read the selection with onCheck, and add a search box.",
+  alternates: { canonical: "/docs/quick-start" },
+};
+
+# Quick start
+
+Here is a working tree, complete, in one file. Paste it into a route and it runs.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  const [checked, setChecked] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
+
+  return (
+    <div>
+      <input
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files…"
+        type="search"
+        value={query}
+      />
+
+      <Tree
+        aria-label="Project files"
+        data={data}
+        height={320}
+        onCheck={setChecked}
+        searchQuery={query}
+      />
+
+      <p>{checked.length} selected</p>
+    </div>
+  );
+}
+```
+
+That is the whole API surface you need for a working tree: a flat `data` map, a `height`, and an
+`onCheck` handler. Everything below explains what each of those three lines is doing.
+
+<Callout type="note" title="Why the file starts with a client directive">
+This example holds state, so it has to be a client component in the Next.js App Router. The library
+itself does not force this — its build already carries a `"use client"` banner, so a tree with no
+state of its own can be imported straight into a server file. See
+[Installation](/docs/installation).
+</Callout>
+
+## Step 1 — Render the tree
+
+The minimum is `data` and a height.
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  return <Tree aria-label="Project files" data={data} height={320} />;
+}
+```
+
+Four things about that data map are worth reading twice:
+
+- **It is flat, not nested.** Every node is a top-level key, and parents point at children by ID.
+  That keeps lookups O(1) and lets you build the map straight from a SQL result without recursion.
+- **`__root__` is required and never rendered.** Its `children` are your top-level rows.
+- **A node with `children` is a folder. A node without is a leaf.** There is no `isFolder` flag; the
+  presence of children is the flag.
+- **Only leaves carry a checked state.** `docs` is never "checked" — it is rendered checked because
+  both of its children are.
+
+`height={320}` sets the height of the scroll container. It defaults to `"100%"`, which is zero
+pixels when the parent has no height of its own — and a zero-height tree renders zero rows. If you
+see an empty `role="tree"` container, that is why.
+
+You get more than a list of rows for free here: full keyboard navigation (arrows, `Home`, `End`,
+`Space`, `Enter`, `*` to expand everything, `Ctrl`/`Cmd`+`A` to select all, and type-ahead), and a
+real ARIA tree — `role="tree"` on the container, `role="treeitem"` with `aria-level`,
+`aria-setsize`, `aria-posinset` and `aria-checked` on every row.
+
+<Callout type="tip" title="It ships no CSS">
+Until you style it, rows use a native checkbox and a `+`/`−` text expander. Rows expose
+`data-state` (`"checked"`, `"unchecked"` or `"indeterminate"`), `data-level`, `data-expanded`,
+`data-leaf` and `data-active` for you to hang styles on. See [Styling](/docs/styling).
+</Callout>
+
+## Step 2 — Read the selection
+
+`onCheck` fires with an array of checked **leaf** IDs, every time the selection changes.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  const [checked, setChecked] = useState<string[]>([]);
+
+  return (
+    <div>
+      <Tree
+        aria-label="Project files"
+        data={data}
+        height={320}
+        onCheck={setChecked}
+      />
+
+      <p>
+        {checked.length} file{checked.length === 1 ? "" : "s"} selected
+      </p>
+    </div>
+  );
+}
+```
+
+Click the `docs` folder's checkbox and `onCheck` fires with `["guide", "readme"]` — the two leaves
+under it, not `"docs"`. **Folder IDs never appear in that array.** A folder has no checked state of
+its own; it is displayed as checked, unchecked or indeterminate purely as a function of its
+descendants. If your backend expects `"docs"` to mean "everything under docs", map the leaf IDs back
+to it yourself, or read the sparse form with `getCheckedSubtrees()` from the
+[imperative API](/docs/imperative-api).
+
+The example above is *uncontrolled*: the tree owns the selection and tells you about it. `checkedItems`
+seeds that selection from outside — a value restored from a database, a URL, or `localStorage`:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree({ saved }: { saved: string[] }) {
+  const [checked, setChecked] = useState<string[]>(saved);
+
+  return (
+    <div>
+      <Tree
+        aria-label="Project files"
+        checkedItems={checked}
+        data={data}
+        height={320}
+        onCheck={setChecked}
+      />
+
+      <p>{checked.length} selected</p>
+    </div>
+  );
+}
+```
+
+`checkedItems` takes leaf IDs. Folder IDs and unknown IDs in that array are ignored rather than
+throwing, and echoing back exactly what `onCheck` handed you is a no-op — it will not loop.
+
+To *change* the selection from a button — clear all, select all, restore a preset — go through the
+engine on the tree's ref rather than through `checkedItems`:
+
+```tsx
+"use client";
+
+import { useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  const treeRef = useRef<TreeRef>(null);
+  const [checked, setChecked] = useState<string[]>([]);
+
+  return (
+    <div>
+      <button onClick={() => treeRef.current?.getEngine().uncheckAll()} type="button">
+        Clear
+      </button>
+      <button onClick={() => treeRef.current?.getEngine().checkAll()} type="button">
+        Select all
+      </button>
+
+      <Tree
+        aria-label="Project files"
+        data={data}
+        height={320}
+        onCheck={setChecked}
+        ref={treeRef}
+      />
+
+      <p>{checked.length} selected</p>
+    </div>
+  );
+}
+```
+
+`getEngine()` returns the same engine the tree renders from, so `uncheckAll()` and `checkAll()` repaint
+the rows and fire `onCheck` — your `checked` state stays in sync without a second source of truth.
+
+<Callout type="warn" title="Pushing a new checkedItems array does not repaint on its own">
+In v0.2.0, handing `checkedItems` a new value after mount updates the engine's selection but does not
+force the rows to re-render: they keep their previous state until something else re-renders the tree,
+such as expanding a folder. Seeding an initial selection works; changing one from a button should go
+through `getEngine()` as above. Details in
+[Controlled & uncontrolled](/docs/controlled-uncontrolled).
+</Callout>
+
+## Step 3 — Add a search box
+
+Search is a controlled prop, not a built-in input. You own the text field; the tree filters to
+matches and their ancestors.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  const [query, setQuery] = useState("");
+
+  return (
+    <div>
+      <input
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files…"
+        type="search"
+        value={query}
+      />
+
+      <Tree
+        aria-label="Project files"
+        data={data}
+        height={320}
+        minSearchChars={3}
+        searchQuery={query}
+        searchScope="all"
+      />
+    </div>
+  );
+}
+```
+
+Type `tree` and the view collapses to `src` → `ui` → `tree.tsx`: the match, plus the ancestors it
+needs to be reachable. Four behaviors are worth knowing before you build on this:
+
+- **Nothing happens under three characters.** `minSearchChars` defaults to `3`. Filtering a large
+  tree on one letter is both expensive and useless; set it to `1` if you disagree.
+- **Folder names match too.** `searchScope` defaults to `"all"`, so typing `docs` matches the folder
+  and carries its entire subtree into the filtered view — checking it then selects everything under
+  it, because it all matched. Pass `searchScope="leaves"` to match only leaf labels.
+- **Clearing the query restores your expansion.** The expansion state is snapshotted when search
+  activates and put back when the query empties, so a user who had ten folders open gets those ten
+  folders back.
+- **Matching is diacritic- and case-insensitive.** Typing `resume` matches `Résumé.pdf`.
+
+While a filter is active, checking a folder affects only the leaves currently on screen. Filter to
+twelve matches, check the parent, clear the filter, and exactly those twelve are checked. That is
+[covered in depth in Search](/docs/search).
+
+## What if I want my own checkbox?
+
+Pass `renderCheckbox`, and spread the `a11yProps` object it hands you onto your control. This is the
+one thing people get wrong.
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={data}
+      height={320}
+      renderCheckbox={({ a11yProps, checkedState }) => (
+        <span
+          {...a11yProps}
+          className="my-checkbox"
+          data-state={checkedState}
+        />
+      )}
+      renderItem={({ isFolder, item, level }) => (
+        <span data-level={level}>
+          {isFolder ? "📁 " : "📄 "}
+          {item.label}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+`a11yProps` is `aria-hidden` plus `tabIndex: -1`. It matters because the **row** is the interactive
+element: the row carries `role="treeitem"` and `aria-checked`, and keyboard focus is managed on the
+container with `aria-activedescendant`. A custom checkbox that stays visible to assistive technology
+makes every row announce twice, and a focusable one puts hundreds of stops in the tab order. Spread
+`a11yProps` and both problems disappear.
+
+Note also that `renderItem` receives an **object**, not the item: `checkedState`, `id`, `isActive`,
+`isExpanded`, `isFolder`, `item` and `level`. `item` is the node itself, including any `data` blob
+you attached to it.
+
+## What to read next
+
+- [Data model](/docs/data-model) — `TreeDefinition`, the `__root__` node, and building the map from
+  an API response
+- [Checkbox semantics](/docs/checkbox-semantics) — why folders derive their state, and how a
+  50,000-leaf cascade costs one write
+- [Controlled & uncontrolled](/docs/controlled-uncontrolled) — taking control of selection,
+  expansion and search independently
+- [Search](/docs/search) — ancestor-aware filtering and visible-leaf-only toggling
+- [Virtualization](/docs/virtualization) — `estimateSize`, `overscan`, and scroll containers
+- [Render props](/docs/rendering) — `renderItem`, `renderCheckbox` and `renderExpander` in full
+- [Styling](/docs/styling) — the data-attribute contract and a Tailwind skin
+- [Imperative API](/docs/imperative-api) — `expandAll`, `collapseAll`, `scrollToId`, `focusId` and
+  `getEngine`

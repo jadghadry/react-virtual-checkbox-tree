@@ -1,0 +1,493 @@
+export const metadata = {
+  title: "From react-checkbox-tree — react-virtual-checkbox-tree",
+  description:
+    "A prop-by-prop migration map from react-checkbox-tree, a working convertNodes() for the data shape, what you gain, and what you give up.",
+  alternates: { canonical: "/docs/migrating/react-checkbox-tree" },
+};
+
+# Migrating from react-checkbox-tree
+
+Two things change: your nested `nodes` array becomes a flat map keyed by id, and every visual
+decision moves from a prop to a render prop. Everything else — controlled `checked`, controlled
+`expanded`, tri-state parents, leaf-only cascade — works the same way and often needs no thought at
+all.
+
+This page is written against [**react-checkbox-tree v2.0.2**](https://www.npmjs.com/package/react-checkbox-tree/v/2.0.2), published 2026-05-28, and was last verified on 2026-09-10. Their prop names come from
+their README; ours are all verifiable in `src/tree.tsx`.
+
+<Callout type="note" title="react-checkbox-tree is a good library">
+It has been the default answer for a React checkbox tree since 2017, and it does things this
+library deliberately does not: per-node `disabled`, `noCascade`, a hidden form input, a localization
+table. The one thing it has never done is virtualize —
+[issue #43, "Poor performance when data is huge"](https://github.com/jakezatecky/react-checkbox-tree/issues/43),
+has been open since July 2017. If 35,000 nodes is why you are here, migrate. If it isn't, read the
+["what you lose"](#what-do-you-lose) section before you spend an afternoon.
+</Callout>
+
+## Before and after
+
+The same tree, twice. First in react-checkbox-tree:
+
+```tsx
+import { useState } from "react";
+import CheckboxTree from "react-checkbox-tree";
+import "react-checkbox-tree/lib/react-checkbox-tree.css";
+
+const nodes = [
+  {
+    value: "docs",
+    label: "docs",
+    children: [
+      { value: "readme", label: "README.md" },
+      { value: "guide", label: "guide.md" },
+    ],
+  },
+  {
+    value: "src",
+    label: "src",
+    children: [
+      { value: "engine", label: "engine.ts" },
+      {
+        value: "ui",
+        label: "ui",
+        children: [
+          { value: "tree", label: "tree.tsx" },
+          { value: "row", label: "row.tsx" },
+        ],
+      },
+    ],
+  },
+];
+
+export function Files() {
+  const [checked, setChecked] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<string[]>(["docs", "src"]);
+
+  return (
+    <CheckboxTree
+      checked={checked}
+      expanded={expanded}
+      nodes={nodes}
+      onCheck={(next) => setChecked(next)}
+      onExpand={(next) => setExpanded(next)}
+    />
+  );
+}
+```
+
+And then here:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function Files() {
+  const [checked, setChecked] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<string[]>(["docs", "src"]);
+
+  return (
+    <Tree
+      aria-label="Project files"
+      checkedItems={checked}
+      data={data}
+      expandedItems={expanded}
+      height={320}
+      onCheck={setChecked}
+      onExpand={setExpanded}
+    />
+  );
+}
+```
+
+Four differences worth naming:
+
+1. **No stylesheet import.** There is no CSS to import, and no Font Awesome to load. Rows are unstyled
+   until you style them.
+2. **`data` is a flat map.** The `__root__` entry is required; its `children` are your top-level rows,
+   and the root itself is never rendered.
+3. **`height` is required in practice.** The scroll container defaults to `height: "100%"`, so if its
+   parent has no height you will see nothing. react-checkbox-tree grows to fit its content; a
+   virtualized list cannot.
+4. **`onCheck` and `onExpand` take one argument.** There is no `targetNode` second argument.
+
+<Callout type="warn" title="Row height comes from estimateSize, not from CSS">
+Each row carries an inline `height` computed by the virtualizer, so a CSS rule setting a different
+row height will fight it and rows will overlap. If your rows are 40px tall, pass `estimateSize={40}`.
+The default is `32`.
+</Callout>
+
+## How do I convert the nodes array?
+
+Paste this. It walks the nested array once and returns a `TreeDefinition` you can hand straight to
+`data`.
+
+```ts
+import type { TreeDefinition, TreeItem } from "react-virtual-checkbox-tree";
+
+/** The node shape react-checkbox-tree accepts. */
+export type RctNode = {
+  children?: RctNode[];
+  className?: string;
+  disabled?: boolean;
+  icon?: unknown;
+  label: unknown;
+  showCheckbox?: boolean;
+  title?: string;
+  value: number | string;
+};
+
+/**
+ * Flattens a react-checkbox-tree `nodes` array into a `TreeDefinition`.
+ *
+ * Everything the old component read off the node itself — icon, className,
+ * disabled, title — is preserved under `item.data` and comes back untouched in
+ * `renderItem`.
+ */
+export function convertNodes(nodes: RctNode[], rootId = "__root__"): TreeDefinition {
+  const data: TreeDefinition = { [rootId]: { id: rootId, label: "root", children: [] } };
+
+  // An explicit stack rather than recursion: a deeply nested export should not
+  // overflow the call stack halfway through a migration.
+  const stack: Array<{ nodes: RctNode[]; parentId: string }> = [{ nodes, parentId: rootId }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const childIds: string[] = [];
+
+    for (const node of frame.nodes) {
+      const id = String(node.value);
+
+      if (data[id]) {
+        throw new Error(
+          `convertNodes: duplicate node value "${id}". IDs must be unique across the whole tree.`
+        );
+      }
+
+      const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+
+      // `label` must be a string here — it is what search matches against. A
+      // React-element label moves into `data` and is drawn by `renderItem`.
+      const item: TreeItem = {
+        id,
+        label: typeof node.label === "string" ? node.label : id,
+        data: {
+          className: node.className,
+          disabled: node.disabled ?? false,
+          icon: node.icon,
+          richLabel: typeof node.label === "string" ? undefined : node.label,
+          showCheckbox: node.showCheckbox ?? true,
+          title: node.title,
+        },
+      };
+      if (hasChildren) item.children = [];
+
+      data[id] = item;
+      childIds.push(id);
+      if (hasChildren) stack.push({ nodes: node.children!, parentId: id });
+    }
+
+    data[frame.parentId].children = childIds;
+  }
+
+  return data;
+}
+```
+
+Three conversion decisions this makes for you, in case you want different ones:
+
+- **A node with `children: []` becomes a leaf**, and leaves are the only checkable nodes here. If your
+  data has empty-array parents that must stay parents, give them a placeholder child instead — see
+  [Loading data in pages](/docs/recipes/async-children).
+- **Duplicate values throw** rather than silently winning. This library models a tree, not a graph: a
+  node listed under two parents keeps only the last parent it saw, and warns in development.
+- **Non-string labels are replaced by the id** and stashed at `item.data.richLabel`. Search matches
+  `label`, so a React element there would match nothing.
+
+## Prop-by-prop mapping
+
+| react-checkbox-tree | react-virtual-checkbox-tree | Notes |
+| --- | --- | --- |
+| `nodes` | `data` | Nested array becomes a flat map keyed by id. Use `convertNodes()` above. |
+| `checked` | `checkedItems` | Both hold leaf ids. Folder ids passed here are ignored. |
+| `expanded` | `expandedItems` | `onExpand` also reports `__root__`; handing that list straight back is safe and settles in one pass. |
+| `onCheck(checked, node)` | `onCheck(checkedLeafIds)` | One argument. There is no `targetNode`. |
+| `onExpand(expanded, node)` | `onExpand(expandedFolderIds)` | One argument. There is no `targetNode`. |
+| `icons` | `renderCheckbox`, `renderExpander`, `renderItem` | No icon-slot object, and no Font Awesome dependency. |
+| `iconsClass` | — | Nothing is themed by class name. |
+| `showNodeIcon` | `renderItem` | Draw your own icon from `item.data`. |
+| `nativeCheckboxes` | (already the default) | The built-in checkbox is a native `input type="checkbox"`. |
+| `onlyLeafCheckboxes` | `renderCheckbox` returning `null` for folders | See below. |
+| `checkModel="all"` | — | `onCheck` returns leaf ids only, always. Rebuild the "all" list from the engine — see below. |
+| `noCascade` | — | Not supported. Checking a folder always cascades to its subtree. |
+| `optimisticToggle` | — | Always behaves as `true`: toggling a mixed folder checks everything under it. |
+| `disabled` | — | No `disabled` prop, and no per-node `disabled`. |
+| `expandDisabled` | — | Not supported. Clicking a folder row always toggles it. |
+| `expandOnClick` | (always on) | Clicking a folder row expands it. Not configurable. |
+| `onClick` | `renderItem` | Attach your own handler and call `stopPropagation()` on it. |
+| `onContextMenu` | — | Not supported. Explicit non-goal. |
+| `showExpandAll` | `ref.expandAll()` and `ref.collapseAll()` | The buttons are yours to render. |
+| `checkKeys` | — | Space toggles the check. Enter toggles the check on a leaf, expansion on a folder. Not configurable. |
+| `direction="rtl"` | — | No `direction` prop. Rows indent with `paddingInlineStart`, so an ambient `dir="rtl"` flips indentation, but nothing else is tested for RTL. |
+| `lang` | — | No localization table. The only built-in strings are the `+` and `−` expander glyphs, replaceable via `renderExpander`. |
+| `name`, `nameAsArray` | — | No hidden form input. Serialize the `onCheck` array yourself. |
+| `showNodeTitle` | `renderItem` | Set `title` on your own element. |
+| `id` | `className`, `style` | Row DOM ids are generated from React's `useId` and are not configurable. |
+| `node.value` | map key and `item.id` | Must be a string in the map. `convertNodes()` calls `String()` on it. |
+| `node.label` | `item.label` | Must be a string — it is what search matches. |
+| `node.children` | `item.children` | An array of ids, not of nested objects. |
+| `node.className` | `renderItem` | |
+| `node.disabled` | — | Not supported at any level. |
+| `node.icon` | `item.data` plus `renderItem` | |
+| `node.showCheckbox` | `renderCheckbox` returning `null` | |
+| `node.title` | `renderItem` | |
+| `react-checkbox-tree.css` | — | No stylesheet ships. Style `[data-rvct-row]` yourself. |
+
+Props with no counterpart in react-checkbox-tree, because they exist to make virtualization and
+search work: `estimateSize`, `overscan`, `indent`, `height`, `searchQuery`, `searchScope`,
+`minSearchChars`, `aria-label`, `aria-labelledby`, `className`, `style`, and the `ref` API
+(`expandAll`, `collapseAll`, `focusId`, `scrollToId`, `getEngine`).
+
+## How do I use my own checkbox?
+
+Through `renderCheckbox`. The one rule that matters:
+
+<Callout type="warn" title="Always spread a11yProps onto your control">
+The **row** carries `role="treeitem"` and `aria-checked`, not the checkbox. Every render prop is
+handed an `a11yProps` object (`{ "aria-hidden": true, tabIndex: -1 }`) that must be spread onto
+whatever you render. Skip it and a screen reader announces every row twice, and Tab walks through
+hundreds of controls instead of landing on the tree once.
+</Callout>
+
+```tsx
+"use client";
+
+import {
+  CheckedState,
+  Tree,
+  type TreeDefinition,
+} from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function Files() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={data}
+      height={320}
+      // The `onlyLeafCheckboxes` equivalent: folders simply get no checkbox.
+      renderCheckbox={({ a11yProps, checkedState, isFolder }) =>
+        isFolder ? null : (
+          <input
+            {...a11yProps}
+            checked={checkedState === CheckedState.Checked}
+            onChange={() => {
+              /* the row owns the interaction */
+            }}
+            type="checkbox"
+          />
+        )
+      }
+      renderExpander={({ a11yProps, isExpanded, onToggle }) => (
+        <button
+          {...a11yProps}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+          type="button"
+        >
+          {isExpanded ? "▾" : "▸"}
+        </button>
+      )}
+    />
+  );
+}
+```
+
+Hiding a folder's checkbox is visual only: the row still exposes `aria-checked` and Space still
+toggles it. That is deliberate — an assistive-technology user should not lose the ability to select a
+whole folder because of a styling choice.
+
+`renderItem` changed shape in 0.2.0 and is now called with an object, not with the item. The object is
+`{ checkedState, id, isActive, isExpanded, isFolder, item, level }` — everything you would otherwise
+have to look up yourself:
+
+```tsx
+"use client";
+
+import { CheckedState, Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function Files() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={data}
+      height={320}
+      // Not renderItem(item) — one object, destructured.
+      renderItem={({ checkedState, isFolder, item, level }) => (
+        <span
+          style={{ fontWeight: isFolder ? 600 : 400 }}
+          title={`level ${level}, ${checkedState}`}
+        >
+          {item.label}
+          {checkedState === CheckedState.Indeterminate ? " (partial)" : null}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+## How do I get the checkModel="all" list?
+
+Ask the engine for each node's state. `onCheck` gives you leaf ids only and will not change.
+
+```tsx
+"use client";
+
+import { useCallback, useRef } from "react";
+import {
+  CheckedState,
+  Tree,
+  type TreeDefinition,
+  type TreeRef,
+} from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function Files() {
+  const treeRef = useRef<TreeRef>(null);
+
+  // Equivalent to react-checkbox-tree's checkModel="all": every fully checked
+  // node, folders included. Costs one pass over `data`, so call it when you
+  // submit, not on every keystroke.
+  const checkedAll = useCallback(() => {
+    const engine = treeRef.current?.getEngine();
+    if (!engine) return [];
+    return Object.keys(data).filter(
+      (id) => id !== "__root__" && engine.getState(id) === CheckedState.Checked
+    );
+  }, []);
+
+  return (
+    <>
+      <Tree aria-label="Project files" data={data} height={320} ref={treeRef} />
+      <button onClick={() => console.log(checkedAll())} type="button">
+        Log selection
+      </button>
+    </>
+  );
+}
+```
+
+Checking `src` in that tree gives `["src", "engine", "ui", "tree", "row"]` from `checkedAll()`, and
+`["engine", "tree", "row"]` from `onCheck`.
+
+## What do you gain?
+
+- **Virtualization, wired up.** Rows render through `@tanstack/react-virtual` with nothing to install
+  and nothing to configure beyond `estimateSize`. A 100,000-node tree mounts the same handful of DOM
+  elements as a 20-node one.
+- **A selection model that does not grow with the tree.** Checking a folder of 50,000 leaves writes
+  one entry, not 50,000. Cascading a check measures at 1–3 µs whether the tree holds 1,110 nodes or
+  1,111,110.
+- **Search in the box.** `searchQuery` filters to matches and their ancestors, matches folder names by
+  default, strips diacritics, and restores your expansion state when the query clears. There is no
+  filtering in react-checkbox-tree at all.
+- **No CSS, no icon font.** Nothing to override and nothing to load. Rows expose `data-state`
+  (`"checked"`, `"unchecked"` or `"indeterminate"`), `data-level`, `data-expanded`, `data-leaf` and
+  `data-active`; the container exposes `data-rvct-tree`.
+- **A server-safe entry point.** `react-virtual-checkbox-tree/engine` has no React and no
+  `"use client"` banner, so you can compute a selection in a Server Component, a route handler or a
+  Node script without pulling in the renderer or the virtualizer.
+- **Passing a new `data` object is cheap to reason about.** The structure is swapped in place and
+  selection, expansion and the active query survive for nodes that still exist.
+
+## What do you lose?
+
+Honestly, and in the order you will notice:
+
+- **Maturity.** react-checkbox-tree has been on npm since February 2016, is at v2.0.2 across 52 releases, and has been read by far more people
+  than this has. This is v0.2.0 with a 0.x API that will change before 1.0.
+- **`noCascade`.** There is no way to make a parent toggle stop at the parent. Cascade is the model.
+- **`checkModel="all"`.** Recoverable, as shown above, but it costs a pass over `data` instead of
+  being free.
+- **`disabled`, at both levels.** No component-wide `disabled`, no per-node `disabled`. You can render
+  a greyed row through `renderItem`, but it will still toggle when clicked.
+- **`expandDisabled`.** Clicking a folder row always toggles expansion.
+- **`optimisticToggle={false}`.** Toggling a mixed folder always checks everything under it.
+- **The form-input integration.** No `name`, no `nameAsArray`, no hidden `input`. In a plain HTML form
+  you serialize the selection yourself.
+- **`lang`, `iconsClass`, `direction`.** No localization table, no Font Awesome 4/5 switch, no
+  documented RTL support.
+- **`onClick` and `onContextMenu`.** No row click callback and no context menu hook. You can attach
+  handlers inside `renderItem`, but there is no context-menu machinery.
+- **Drag-and-drop, inline rename, context menus** — none of these existed in react-checkbox-tree
+  either, and they are explicit non-goals here too.
+- **Lazy children.** Neither library has an `onLoadChildren`. Here the workaround is documented; see
+  [Loading data in pages](/docs/recipes/async-children).
+- **Checkable folders.** Folders derive their state and can never hold one of their own, so "grant
+  this whole department" as a value distinct from "all its current members today" is not expressible.
+- **Graphs.** A node listed under two parents keeps only the last parent seen, with a development
+  warning.
+
+## Stay on react-checkbox-tree if…
+
+- Your tree is a few hundred nodes and renders fine. Virtualization buys you nothing, and you would be
+  trading a mature library for a 0.x one to fix a problem you do not have.
+- You need `noCascade` or `optimisticToggle={false}`. Neither is expressible here.
+- You need per-node `disabled`. This is the single most common blocker in practice.
+- You post the tree in a plain HTML form and rely on `name` / `nameAsArray`.
+- You need `lang` for localization or `direction="rtl"` support you can point at documentation for.
+- Your labels are React elements and you rely on them being searched or sorted — labels here are
+  strings by design.
+
+If none of those apply and your tree is big, the migration is an afternoon: run `convertNodes()`,
+rename four props, delete the CSS import, and add a `height`.

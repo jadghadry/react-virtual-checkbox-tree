@@ -1,0 +1,496 @@
+import { DemoCustomRender } from "@/components/demo-custom-render";
+
+export const metadata = {
+  title: "Render props — react-virtual-checkbox-tree",
+  description:
+    "renderItem, renderCheckbox and renderExpander: their exact prop objects, the a11yProps contract, and complete examples for a row, chevron and checkbox.",
+  alternates: { canonical: "/docs/rendering" },
+};
+
+# Render props
+
+Three props replace the three pieces of a row: `renderItem` for the body, `renderCheckbox` for the
+box, `renderExpander` for the folder toggle. Each one is called with a **single object**, not with
+positional arguments.
+
+```ts
+renderItem?:      (props: TreeItemRenderProps) => ReactNode;
+renderCheckbox?:  (props: TreeCheckboxRenderProps) => ReactNode;
+renderExpander?:  (props: TreeExpanderRenderProps) => ReactNode;
+```
+
+Everything else about the row — the click handling, the keyboard, the ARIA, the absolute
+positioning the virtualizer needs — stays with the library. You are replacing the contents of a row,
+not the row.
+
+<Callout type="warn" title="renderItem takes an object, not an item">
+If you are coming from an older version or from another library, note the shape. It is
+`renderItem={({ item }) => item.label}` — destructure the object. It is not
+`renderItem={(item) => item.label}`. The object also carries `checkedState`, `isFolder`,
+`isExpanded`, `isActive`, `level` and `id`.
+</Callout>
+
+## What does the row already handle?
+
+Do not re-implement any of this inside a render prop:
+
+- **Click to act.** Clicking anywhere on a folder row toggles its expansion; clicking anywhere on a
+  leaf row toggles its checkbox. Clicking the checkbox area toggles the checkbox on any row,
+  folder included.
+- **Keyboard.** ArrowUp / ArrowDown / ArrowLeft / ArrowRight, Home, End, Space, Enter, `*` to expand
+  everything, Ctrl/Cmd+A to select or clear everything, and type-ahead. See
+  [Accessibility](/docs/accessibility).
+- **ARIA.** The row carries `role="treeitem"`, `aria-level`, `aria-posinset`, `aria-setsize`,
+  `aria-expanded` and `aria-checked` (`"true"`, `"false"` or `"mixed"`).
+- **Indentation.** `paddingInlineStart` is computed from `level` and the `indent` prop. Leaves get
+  one extra step of indent so their labels line up with folder labels.
+- **Positioning and height.** The row is absolutely positioned and its height comes from
+  `estimateSize`. Both are inline styles, so a plain stylesheet rule loses to them — change
+  `estimateSize`, not `height` in a stylesheet.
+- **Data attributes.** `data-state`, `data-level`, `data-expanded`, `data-leaf` and `data-active`
+  are on the row element, outside your render prop. See [Styling](/docs/styling).
+
+## What is a11yProps and why must I spread it?
+
+`renderCheckbox` and `renderExpander` receive an `a11yProps` object, and it must be spread onto the
+control you return:
+
+```ts
+a11yProps: { "aria-hidden": true; tabIndex: -1 }
+```
+
+The **row** is the interactive element. It carries `role="treeitem"` and `aria-checked`, and the
+tree container is the single tab stop for the whole tree. Your checkbox and your expander are
+decoration on top of that. If you leave `a11yProps` off:
+
+- A screen reader announces every row twice — once as a tree item, once as your checkbox or button.
+- Tab walks through two extra controls per row. On a 100,000-row tree that is a keyboard trap with
+  no bottom.
+- The reported checked state can disagree with `aria-checked` on the row.
+
+```tsx
+// Wrong — this checkbox is announced separately and lands in the tab order.
+renderCheckbox={({ checkedState }) => <MyBox state={checkedState} />}
+
+// Right — the control is decorative; the row speaks for it.
+renderCheckbox={({ a11yProps, checkedState }) => <MyBox {...a11yProps} state={checkedState} />}
+```
+
+<Callout type="note" title="renderItem gets no a11yProps">
+Only `renderCheckbox` and `renderExpander` receive it. The row body is plain content, so there is
+nothing to hide. If you put an interactive control inside `renderItem`, give it `tabIndex={-1}` and
+call `event.stopPropagation()` yourself — see [Interactive controls inside a
+row](#can-i-put-a-button-inside-a-row).
+</Callout>
+
+## renderItem
+
+Replaces the row body. Defaults to `item.label`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `checkedState` | `CheckedState` | `"checked"`, `"unchecked"` or `"indeterminate"`. |
+| `id` | `string` | The node ID. |
+| `isActive` | `boolean` | Whether this is the keyboard-active row. |
+| `isExpanded` | `boolean` | Folder open state. Always `false` for leaves. |
+| `isFolder` | `boolean` | Whether the node has children. |
+| `item` | `TreeItem` | The node, including your `item.data` blob. |
+| `level` | `number` | Depth below the root. Top-level rows are `0`. |
+
+A two-line row with an icon and a secondary line. The extra line needs vertical room, so
+`estimateSize` goes up with it:
+
+```tsx
+"use client";
+
+import {
+  CheckedState,
+  Tree,
+  type TreeDefinition,
+  type TreeItemRenderProps,
+} from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md", data: { size: "4.1 kB" } },
+  guide: { id: "guide", label: "guide.md", data: { size: "12.4 kB" } },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts", data: { size: "31.2 kB" } },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx", data: { size: "18.7 kB" } },
+  row: { id: "row", label: "row.tsx", data: { size: "3.8 kB" } },
+};
+
+// Defined outside the component: a fresh function identity on every render
+// would re-render every mounted row.
+function Row({ checkedState, isFolder, item }: TreeItemRenderProps) {
+  const size = typeof item.data?.size === "string" ? item.data.size : null;
+
+  return (
+    <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+      <span aria-hidden style={{ opacity: 0.7 }}>{isFolder ? "▸" : "▪"}</span>
+      <span style={{ display: "flex", flexDirection: "column", lineHeight: 1.25 }}>
+        <span
+          style={{
+            color: checkedState === CheckedState.Unchecked ? "#8a8a8a" : "#fff",
+            fontSize: 13,
+          }}
+        >
+          {item.label}
+        </span>
+        <span style={{ fontSize: 10.5, opacity: 0.6 }}>
+          {isFolder ? `${item.children?.length ?? 0} items` : (size ?? "—")}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+export default function App() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      estimateSize={44}
+      height={320}
+      renderItem={Row}
+    />
+  );
+}
+```
+
+## How do I use my own expander?
+
+`renderExpander` is called **only for folders**. Leaves render nothing in that slot — there is no
+placeholder element to style away, and the leaf's extra `indent` is what keeps the labels aligned.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `a11yProps` | `{ "aria-hidden": true; tabIndex: -1 }` | Spread onto your control. |
+| `id` | `string` | The node ID. |
+| `isExpanded` | `boolean` | Folder open state. |
+| `isFolder` | `boolean` | Always `true` here. |
+| `item` | `TreeItem` | The node. |
+| `level` | `number` | Depth below the root. |
+| `onToggle` | `() => void` | Opens or closes this folder. |
+
+<Callout type="warn" title="Call event.stopPropagation() in your expander">
+The row's own click handler toggles the same folder. If your expander's click bubbles, the folder
+opens and then immediately closes, and clicking the chevron appears to do nothing at all. The
+built-in expander stops propagation; yours must too.
+</Callout>
+
+```tsx
+"use client";
+
+import {
+  Tree,
+  type TreeDefinition,
+  type TreeExpanderRenderProps,
+} from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+function Chevron({ a11yProps, isExpanded, onToggle }: TreeExpanderRenderProps) {
+  return (
+    <button
+      {...a11yProps}
+      onClick={(event) => {
+        event.stopPropagation(); // the row would otherwise toggle it back
+        onToggle();
+      }}
+      style={{
+        alignItems: "center",
+        background: "none",
+        border: 0,
+        cursor: "pointer",
+        display: "inline-flex",
+        height: 16,
+        justifyContent: "center",
+        padding: 0,
+        transform: isExpanded ? "rotate(90deg)" : "none",
+        transition: "transform 150ms ease",
+        width: 16,
+      }}
+      type="button"
+    >
+      <svg fill="none" height="12" viewBox="0 0 12 12" width="12">
+        <path d="M4.5 2.5L8 6l-3.5 3.5" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    </button>
+  );
+}
+
+export default function App() {
+  return (
+    <Tree aria-label="Project files" data={fileTree} height={320} renderExpander={Chevron} />
+  );
+}
+```
+
+## How do I use my own checkbox?
+
+`renderCheckbox` is called for **every** row, folders included — a folder's box is what shows the
+indeterminate state.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `a11yProps` | `{ "aria-hidden": true; tabIndex: -1 }` | Spread onto your control. |
+| `checkedState` | `CheckedState` | `"checked"`, `"unchecked"` or `"indeterminate"`. |
+| `id` | `string` | The node ID. |
+| `isActive` | `boolean` | Whether this is the keyboard-active row. |
+| `isExpanded` | `boolean` | Folder open state. |
+| `isFolder` | `boolean` | Whether the node has children. |
+| `item` | `TreeItem` | The node. |
+| `level` | `number` | Depth below the root. |
+| `onChange` | `(nextChecked: boolean) => void` | Writes the next checked value. |
+
+Unlike the expander, the checkbox slot is wrapped by the library in a span that already toggles the
+node and already calls `stopPropagation()`. So a purely visual checkbox — a `span` with a border —
+needs no handler at all:
+
+```tsx
+"use client";
+
+import {
+  CheckedState,
+  Tree,
+  type TreeCheckboxRenderProps,
+  type TreeDefinition,
+} from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+function Box({ a11yProps, checkedState }: TreeCheckboxRenderProps) {
+  const checked = checkedState === CheckedState.Checked;
+  const mixed = checkedState === CheckedState.Indeterminate;
+
+  return (
+    <span
+      {...a11yProps}
+      style={{
+        alignItems: "center",
+        background: checked || mixed ? "#3b82f6" : "transparent",
+        border: `1px solid ${checked || mixed ? "#3b82f6" : "#555"}`,
+        borderRadius: 4,
+        color: "#fff",
+        display: "inline-flex",
+        flexShrink: 0,
+        fontSize: 10,
+        height: 16,
+        justifyContent: "center",
+        width: 16,
+      }}
+    >
+      {checked ? "✓" : mixed ? "–" : null}
+    </span>
+  );
+}
+
+export default function App() {
+  return <Tree aria-label="Project files" data={fileTree} height={320} renderCheckbox={Box} />;
+}
+```
+
+### When do I need onChange?
+
+Only when your control **swallows the click**. A component that calls `stopPropagation()` internally
+— many design-system checkboxes do — never lets the event reach the library's wrapper, so nothing
+toggles unless you call `onChange` yourself:
+
+```tsx
+renderCheckbox={({ a11yProps, checkedState, onChange }) => (
+  <SomeDesignSystemCheckbox
+    {...a11yProps}
+    checked={checkedState === CheckedState.Indeterminate ? "indeterminate" : checkedState === CheckedState.Checked}
+    onCheckedChange={(next) => onChange(next === true)}
+  />
+)}
+```
+
+Wiring `onChange` when it was not strictly necessary is harmless: both paths compute the same next
+value from the same pre-click state, so the second write is a no-op rather than a second toggle.
+There is a full shadcn/ui recipe in [Styling](/docs/styling#how-do-i-use-the-shadcnui-checkbox).
+
+## Can I put a button inside a row?
+
+Yes, with two rules. The row's click handler will fire for any click that reaches it, so your
+control must stop the event; and the tree is a single tab stop, so your control must not join the
+tab order.
+
+```tsx
+renderItem={({ id, item }) => (
+  <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+    <span>{item.label}</span>
+    <button
+      aria-hidden
+      onClick={(event) => {
+        event.stopPropagation(); // do not toggle the row as well
+        preview(id);
+      }}
+      tabIndex={-1}
+      type="button"
+    >
+      preview
+    </button>
+  </span>
+)}
+```
+
+<Callout type="warn" title="An aria-hidden button is unreachable by keyboard">
+That is the honest trade-off: a per-row action that is invisible to assistive technology is not an
+accessible control. If the action matters, put it in a toolbar above the tree and have it operate on
+the active row via [the imperative API](/docs/imperative-api), where it can be a real, focusable
+button.
+</Callout>
+
+## Do render props hurt performance?
+
+Only if you define them inline. Rows are memoized on their props, and the render props are props, so
+a new function identity on every parent render re-renders every mounted row. That is roughly 15–30
+rows, not 100,000 — survivable, but free to avoid:
+
+```tsx
+// Re-renders every mounted row whenever the parent renders.
+<Tree data={data} renderItem={({ item }) => <b>{item.label}</b>} />
+
+// Stable identity: define it at module scope, or wrap it in useCallback.
+const Row = ({ item }: TreeItemRenderProps) => <b>{item.label}</b>;
+<Tree data={data} renderItem={Row} />
+```
+
+## All three together
+
+<DemoCustomRender />
+
+The demo above is a 44px row with a chevron expander, a custom box, an icon and a secondary line —
+the `fileTree` from every other page, rendered three ways at once.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import {
+  CheckedState,
+  Tree,
+  type TreeCheckboxRenderProps,
+  type TreeDefinition,
+  type TreeExpanderRenderProps,
+  type TreeItemRenderProps,
+} from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const EXPANDED = ["docs", "src", "ui"];
+
+function Chevron({ a11yProps, isExpanded, onToggle }: TreeExpanderRenderProps) {
+  return (
+    <button
+      {...a11yProps}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle();
+      }}
+      style={{
+        background: "none",
+        border: 0,
+        cursor: "pointer",
+        padding: 0,
+        transform: isExpanded ? "rotate(90deg)" : "none",
+        width: 16,
+      }}
+      type="button"
+    >
+      ›
+    </button>
+  );
+}
+
+function Box({ a11yProps, checkedState }: TreeCheckboxRenderProps) {
+  const checked = checkedState === CheckedState.Checked;
+  const mixed = checkedState === CheckedState.Indeterminate;
+  return (
+    <span
+      {...a11yProps}
+      style={{
+        alignItems: "center",
+        background: checked || mixed ? "#3b82f6" : "transparent",
+        border: `1px solid ${checked || mixed ? "#3b82f6" : "#555"}`,
+        borderRadius: 4,
+        display: "inline-flex",
+        height: 16,
+        justifyContent: "center",
+        width: 16,
+      }}
+    >
+      {checked ? "✓" : mixed ? "–" : null}
+    </span>
+  );
+}
+
+function Row({ isFolder, item }: TreeItemRenderProps) {
+  return (
+    <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+      <span aria-hidden>{isFolder ? "📁" : "📄"}</span>
+      <span>{item.label}</span>
+    </span>
+  );
+}
+
+export default function App() {
+  const [checked, setChecked] = useState<string[]>(["engine"]);
+
+  return (
+    <Tree
+      aria-label="Project files"
+      checkedItems={checked}
+      data={fileTree}
+      estimateSize={44}
+      expandedItems={EXPANDED}
+      height={280}
+      indent={22}
+      onCheck={setChecked}
+      renderCheckbox={Box}
+      renderExpander={Chevron}
+      renderItem={Row}
+    />
+  );
+}
+```
+
+## Next
+
+- [Styling](/docs/styling) — the data attributes, a Tailwind skin, and the shadcn/ui checkbox.
+- [Imperative API](/docs/imperative-api) — driving the tree from a toolbar.
+- [Types](/docs/api/types) — the full type definitions for all three prop objects.

@@ -1,0 +1,424 @@
+export const metadata = {
+  title: "Accessibility — react-virtual-checkbox-tree",
+  description:
+    "The ARIA tree contract the component emits, why focus uses aria-activedescendant, the full keyboard map, and an honest list of known gaps.",
+  alternates: { canonical: "/docs/accessibility" },
+};
+
+# Accessibility
+
+`<Tree>` implements the [WAI-ARIA APG Tree View pattern](https://www.w3.org/WAI/ARIA/apg/patterns/treeview/)
+as a multi-select tree: `role="tree"` with `aria-multiselectable` on the scroll container,
+`role="treeitem"` with `aria-checked` on every row, one tab stop for the whole widget, and keyboard
+focus tracked with `aria-activedescendant` instead of a roving `tabindex`.
+
+Everything on this page is emitted by the component itself. You do not opt into it, and there is no
+`a11y` prop to turn it off. The one thing you owe it is an accessible name.
+
+## What ARIA does the component emit?
+
+Two elements carry the contract: the scroll container, and each rendered row.
+
+### On the container
+
+| Attribute | Value | Notes |
+| --- | --- | --- |
+| `role` | `"tree"` | Always. |
+| `aria-multiselectable` | `"true"` | Always. Any number of leaves can be checked at once. |
+| `aria-label` | your `aria-label`, else `"Tree"` | Omitted entirely when you pass `aria-labelledby`. |
+| `aria-labelledby` | your `aria-labelledby` | Takes precedence over `aria-label`. |
+| `aria-activedescendant` | the DOM id of the keyboard-active row | Absent when no row is active, and dropped if the active node is no longer in the visible list. |
+| `tabIndex` | `0` | The single tab stop. |
+| `data-rvct-tree` | `""` | Styling hook, not an ARIA attribute. |
+
+### On each row
+
+| Attribute | Value | Notes |
+| --- | --- | --- |
+| `role` | `"treeitem"` | Always. |
+| `aria-checked` | `"true"` \| `"false"` \| `"mixed"` | `"mixed"` is emitted for a partially checked folder. |
+| `aria-expanded` | `"true"` \| `"false"` | **Folders only.** Omitted on leaves, so nothing describes a file as a collapsed container. |
+| `aria-level` | `1`-based depth | Top-level rows are `1`. Internally levels start at `0`; the row adds one. |
+| `aria-posinset` | 1-based index among visible siblings | |
+| `aria-setsize` | number of visible siblings | Both reflect the *current* view, so they stay correct while a search filter is active. |
+| `id` | `` `${useId()}-${nodeId}` `` | What `aria-activedescendant` points at. Contains colons — look rows up with `document.getElementById`, not a CSS selector. |
+
+Rows also carry `data-rvct-row`, `data-state`, `data-level`, `data-expanded`, `data-leaf` and
+`data-active`. Those are the [styling contract](/docs/styling), not part of the accessibility layer.
+
+## Why is there no `role="group"`?
+
+Because the rows are virtualized, the DOM is flat: every visible row is an absolutely positioned
+sibling inside one container, and a row's children are not nested inside it. There is nowhere to put
+a `role="group"` wrapper, and inserting one per folder would defeat the point of rendering a fixed
+number of elements regardless of tree size.
+
+The APG covers this case explicitly. When nodes are not all present in the DOM, hierarchy is
+declared with `aria-level`, `aria-setsize` and `aria-posinset` rather than inferred from nesting.
+That is exactly what the component does, and it is why `VisibleItem` carries `posInSet` and
+`setSize` alongside `level`.
+
+## Why `aria-activedescendant` instead of a roving tabindex?
+
+Because a virtualized row can be unmounted at any moment, and a row holding real DOM focus takes the
+focus with it when it goes.
+
+The roving-tabindex technique gives exactly one node `tabindex="0"`, moves real DOM focus onto it
+with `element.focus()`, and moves that `0` around as the user arrows through the tree. It is the
+usual answer for a static tree, and it is a trap for a virtualized one:
+
+1. The user arrows down to row 400. That row's DOM node receives focus.
+2. The user keeps arrowing, or the tree scrolls. Row 400 leaves the overscan window and the
+   virtualizer unmounts it.
+3. The focused element is removed from the document. Browsers reset focus to `<body>`.
+4. The next keystroke goes to the page, not the tree. Arrow keys scroll the document. The user's
+   place in a 100,000-row tree is gone, and a screen reader is now reading the page from the top.
+
+`aria-activedescendant` breaks the dependency. DOM focus never leaves the container:
+
+```txt
+container   tabIndex=0, role="tree"   <- real DOM focus lives here, permanently
+  └─ row    role="treeitem", id=":r0:-src"
+                ^ aria-activedescendant on the container points here
+```
+
+The container is focused once, on `Tab`, and stays focused for the lifetime of the interaction. The
+"active" row is a string of state — a node ID — and the container advertises it by id. Unmounting the
+row that string refers to cannot steal focus, because focus was never there.
+
+Two consequences fall out of that design, both deliberate:
+
+- **Moving the active row scrolls it into view.** Every keyboard move calls the virtualizer's
+  `scrollToIndex`, so the element `aria-activedescendant` names is mounted at the moment it becomes
+  active. Without that, the attribute would point at an id that is not in the document.
+- **The attribute is dropped rather than left dangling.** The component resolves the active ID
+  against the current visible list on every render (`engine.indexOf(activeId)`). If the active node
+  gets collapsed away or filtered out by a search, `aria-activedescendant` is removed instead of
+  pointing at a row that no longer exists.
+
+<Callout type="note" title="Focus and selection are different things">
+In a multi-select tree the APG treats the focused node and the selected nodes as independent. Here
+the active row is tracked by `aria-activedescendant`, and selection is tracked by `aria-checked` on
+each row. Arrowing through the tree changes the first and never the second.
+</Callout>
+
+## What is the full keyboard map?
+
+The tree is one tab stop. Everything below happens while the container has focus.
+
+| Key | What it does |
+| --- | --- |
+| `Tab` | Moves into or out of the tree. The whole widget is a single stop. |
+| `ArrowDown` | Moves to the next visible row. With no active row, moves to the first row. |
+| `ArrowUp` | Moves to the previous visible row. With no active row, moves to the **last** row. |
+| `Home` | Moves to the first visible row. |
+| `End` | Moves to the last visible row. |
+| `ArrowRight` | On a collapsed folder, expands it without moving. On an expanded folder, moves to its first child. On a leaf, nothing. |
+| `ArrowLeft` | On an expanded folder, collapses it without moving. Otherwise moves to the parent row. |
+| `Space` | Toggles the checked state of the active row. A folder cascades through its subtree; a mixed folder becomes fully checked. |
+| `Enter` | On a folder, expands or collapses it. On a leaf, toggles its checkbox. |
+| `*` | Expands every folder in the tree. |
+| `Ctrl+A` / `Cmd+A` | Checks every leaf. Press it again — when everything is already checked — to clear the selection. |
+| Printable characters | Type-ahead. Jumps to the next row whose label starts with what you typed, wrapping around the end of the list. The buffer resets after 600 ms of no typing. |
+
+Type-ahead matches labels case-insensitively with a plain `startsWith`. Note that it does **not**
+strip diacritics, unlike [search](/docs/search), which normalizes both the query and the label — so
+type-ahead for `resume` will not land on `Résumé.pdf`, while `searchQuery="resume"` will.
+
+Mouse behavior mirrors the keyboard, and clicking also moves the active row: clicking a folder row
+toggles its expansion, clicking a leaf row toggles its checkbox, and clicking the checkbox itself
+toggles the check without expanding the folder underneath it.
+
+## Why is the visual checkbox `aria-hidden` and `tabIndex={-1}`?
+
+Because the row is the `treeitem`, and the row already carries `aria-checked`. If the `<input>`
+inside it were also exposed, every row would be announced twice — once as a tree item that is
+checked, and once as a checkbox that is checked — and `Tab` would walk through one control per row
+instead of leaving the tree in one press.
+
+So the default checkbox and the default expander are both rendered as decorations:
+
+```tsx
+const DECORATIVE = { "aria-hidden": true, tabIndex: -1 } as const;
+```
+
+That exact object is handed to your custom renderers as `a11yProps`.
+
+<Callout type="warn" title="Spread a11yProps onto your custom control">
+If you pass `renderCheckbox` or `renderExpander` and forget to spread `a11yProps`, you break the
+tree's accessibility even though it still looks correct. Screen readers announce every row twice,
+and `Tab` gets trapped stepping through hundreds of controls.
+</Callout>
+
+Here is the correct shape for both, with the canonical dataset:
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function AccessibleCustomControls() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      height={320}
+      // The expander is decorative: the ROW carries aria-expanded.
+      renderExpander={({ a11yProps, isExpanded, onToggle }) => (
+        <button
+          {...a11yProps}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+          type="button"
+        >
+          {isExpanded ? "▾" : "▸"}
+        </button>
+      )}
+      // The checkbox is decorative: the ROW carries aria-checked.
+      renderCheckbox={({ a11yProps, checkedState }) => (
+        <span {...a11yProps} data-box={checkedState}>
+          {checkedState === "checked" ? "✔" : checkedState === "indeterminate" ? "–" : ""}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+Three rules for a custom control:
+
+1. **Spread `a11yProps`.** Always, on both renderers.
+2. **Do not add a `role`, an `aria-checked`, or a `label`.** They would be inside an `aria-hidden`
+   subtree and are wasted at best; if you also remove `aria-hidden`, they duplicate the row.
+3. **You usually do not need your own click handler on the checkbox.** The row wraps whatever
+   `renderCheckbox` returns in a span that already stops propagation and calls `onChange` for you.
+   If you do attach one, call `event.stopPropagation()` inside it — otherwise the wrapper fires as
+   well and the second toggle undoes the first. The expander is not wrapped, so a custom expander
+   *must* stop propagation or the row's own click handler will toggle expansion a second time.
+
+If you use a component library's checkbox — Radix, MUI, a shadcn/ui `Checkbox` — pass `a11yProps`
+straight through to it. Anything that renders a real `<input>` or a `role="checkbox"` element
+*must* receive `aria-hidden` and `tabIndex={-1}`, and most of these components forward unknown props
+to their root element for exactly this reason. The [styling page](/docs/styling) has a working
+shadcn/ui recipe.
+
+## What does a screen reader announce?
+
+The row is what gets announced, and `aria-checked` is what carries the state.
+
+| `data-state` | `aria-checked` | Conveyed as |
+| --- | --- | --- |
+| `checked` | `"true"` | checked / selected |
+| `unchecked` | `"false"` | not checked / not selected |
+| `indeterminate` | `"mixed"` | partially checked / mixed |
+
+A typical folder row is announced with its label, its checked state, whether it is expanded, and its
+position: something along the lines of *"src, partially checked, collapsed, level 1, 2 of 2, tree
+item."* The order and the exact wording differ between NVDA, JAWS and VoiceOver, and between
+browsers — `"mixed"` in particular is spoken as "partially checked", "mixed" or "half checked"
+depending on the combination.
+
+<Callout type="note" title="What we can and cannot claim">
+The attribute values above are asserted by the test suite, so they are guaranteed. The spoken
+phrasing is the screen reader's business, and this library has not been through a formal screen
+reader test matrix — see Known gaps below.
+</Callout>
+
+## Do I have to pass `aria-label`?
+
+Yes, in practice. A tree with no name is announced as an unlabeled tree, which tells the user
+nothing about which of your trees they are in.
+
+Pass one of two things:
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+// A string name.
+export function NamedTree() {
+  return <Tree aria-label="Project files" data={fileTree} height={320} />;
+}
+
+// Or point at a visible heading, which is better when one exists.
+export function LabelledByHeading() {
+  return (
+    <section>
+      <h2 id="files-heading">Project files</h2>
+      <Tree aria-labelledby="files-heading" data={fileTree} height={320} />
+    </section>
+  );
+}
+```
+
+`aria-labelledby` wins: when you pass it, `aria-label` is omitted from the DOM entirely rather than
+competing with it. If you pass neither, the container falls back to the literal string `"Tree"`.
+That fallback exists so the widget is never nameless — it is not a substitute for naming it.
+
+## Known gaps
+
+These are real. None of them are hidden behind a "coming soon".
+
+- **No `aria-describedby` hook.** There is no prop for attaching a description to a row, and no
+  render prop return value that becomes one. A description you render inside `renderItem` becomes
+  part of the row's accessible name instead of a separate description.
+- **No shift-range selection.** The APG lists `Shift+ArrowDown` / `Shift+ArrowUp` and `Shift+Space`
+  as ways to extend a selection across a contiguous run of nodes. They are not implemented. Space
+  toggles one row; `Ctrl/Cmd+A` toggles everything; there is nothing in between.
+- **`*` expands the whole tree, not the current level.** The APG defines `*` as "expand all sibling
+  nodes at the same level as the focused node". Here it calls `expandAll()`. On a large tree that is
+  a much bigger operation than the pattern intends — see [Performance](/docs/performance).
+- **`Enter` on a leaf checks it rather than activating it.** The pattern reserves `Enter` for the
+  node's default action. There is no `onActivate` callback distinct from `onCheck`, so "open this
+  file" is not something the tree can express.
+- **Focus does not start on the first checked node.** The pattern says entering a multi-select tree
+  should put focus on the first selected node. Here no row is active until the first key press, and
+  `ArrowDown` starts at the top of the list.
+- **`aria-activedescendant` can go stale after a mouse scroll.** Keyboard moves scroll the active row
+  into view, so it is mounted when it becomes active. If the user then scrolls away with the mouse or
+  the scrollbar, the virtualizer eventually unmounts that row and the attribute names an element that
+  is no longer in the document until the next keystroke brings it back.
+- **No RTL testing.** Rows are laid out with `paddingInlineStart`, which is direction-aware, so an
+  RTL page should indent correctly. "Should" is doing work in that sentence: nothing in the test
+  suite renders the tree under `dir="rtl"`, and `ArrowLeft` / `ArrowRight` are not mirrored.
+- **No `aria-orientation="horizontal"` support.** The tree is vertical, always.
+- **No live region for search.** Filtering changes the visible set silently. If you want the match
+  count announced, render your own `aria-live` region next to your search input and feed it
+  `getEngine().getMatchCount()`.
+- **No published VPAT and no third-party audit.** The ARIA contract is asserted by unit tests; it has
+  not been reviewed by an accessibility specialist, and there is no conformance document to hand to
+  a procurement team.
+- **No automated axe suite yet.** CI runs the assertions below on every commit, but nothing runs
+  `axe-core` over a rendered tree.
+
+If any of these blocks you, they are all tractable — the gaps are missing features, not design
+constraints.
+
+## How do I test the ARIA contract?
+
+Assert the attributes directly. This is close to what the library's own `tree.test.tsx` does, and it
+runs against your renderers, so it catches a `renderCheckbox` that forgot `a11yProps`.
+
+```tsx
+import "@testing-library/jest-dom/vitest";
+
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it } from "vitest";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const rows = () => screen.getAllByRole("treeitem");
+const rowFor = (label: string) =>
+  rows().find((row) => row.textContent?.replace(/^[+−]/, "") === label)!;
+
+// aria-activedescendant points at a row id, and those ids contain colons.
+// Resolve them with getElementById, never with a CSS selector.
+const activeLabel = () => {
+  const id = screen.getByRole("tree").getAttribute("aria-activedescendant");
+  return id ? document.getElementById(id)?.textContent?.replace(/^[+−]/, "") : null;
+};
+
+describe("aria contract", () => {
+  it("names the tree and marks it multi-selectable", () => {
+    render(<Tree aria-label="Project files" data={fileTree} height={400} />);
+    const tree = screen.getByRole("tree", { name: "Project files" });
+    expect(tree).toHaveAttribute("aria-multiselectable", "true");
+    expect(tree).toHaveAttribute("tabindex", "0");
+  });
+
+  it("declares hierarchy with level, setsize and posinset", () => {
+    render(<Tree aria-label="Files" data={fileTree} expandedItems={["docs"]} height={400} />);
+    expect(rowFor("docs")).toHaveAttribute("aria-level", "1");
+    expect(rowFor("docs")).toHaveAttribute("aria-posinset", "1");
+    expect(rowFor("docs")).toHaveAttribute("aria-setsize", "2");
+    expect(rowFor("README.md")).toHaveAttribute("aria-level", "2");
+  });
+
+  it("reports mixed on a partially checked folder", async () => {
+    const user = userEvent.setup();
+    render(<Tree aria-label="Files" data={fileTree} expandedItems={["docs"]} height={400} />);
+
+    expect(rowFor("docs")).toHaveAttribute("aria-checked", "false");
+    await user.click(rowFor("README.md"));
+    expect(rowFor("README.md")).toHaveAttribute("aria-checked", "true");
+    expect(rowFor("docs")).toHaveAttribute("aria-checked", "mixed");
+    // aria-selected must never appear alongside aria-checked.
+    expect(rowFor("docs")).not.toHaveAttribute("aria-selected");
+  });
+
+  // Render this with your own renderCheckbox to catch a missing a11yProps.
+  it("keeps the checkbox out of the tab order and the a11y tree", () => {
+    render(<Tree aria-label="Files" data={fileTree} height={400} />);
+    const box = within(rowFor("docs")).getByRole("checkbox", { hidden: true });
+    expect(box).toHaveAttribute("aria-hidden", "true");
+    expect(box).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("moves the active descendant with the arrow keys", async () => {
+    const user = userEvent.setup();
+    render(<Tree aria-label="Files" data={fileTree} height={400} />);
+
+    await user.tab();
+    expect(screen.getByRole("tree")).toHaveFocus();
+
+    await user.keyboard("{ArrowDown}");
+    expect(activeLabel()).toBe("docs");
+    await user.keyboard("{ArrowDown}");
+    expect(activeLabel()).toBe("src");
+    // DOM focus never leaves the container, whatever the active row is.
+    expect(screen.getByRole("tree")).toHaveFocus();
+  });
+});
+```
+
+<Callout type="warn" title="jsdom reports a zero-height viewport">
+The virtualizer measures the scroll container, and jsdom gives every element a zero bounding box —
+so without a setup file the tree renders no rows at all and every assertion above fails on an empty
+list. Stub the measurements once, globally; the [FAQ](/docs/faq) has the exact setup file.
+</Callout>
+
+## Next
+
+- [`<Tree>` props](/docs/api/tree) — the render props and the data attributes in full
+- [Styling](/docs/styling) — styling the active row and the mixed state from `data-*`
+- [Performance](/docs/performance) — what `*` and `Ctrl+A` actually cost at scale

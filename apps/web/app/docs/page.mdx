@@ -1,0 +1,66 @@
+export const metadata = {
+  title: "Introduction — react-virtual-checkbox-tree",
+  description:
+    "A headless, virtualized checkbox tree for React: tri-state parents derived from a sparse selection model, ancestor-aware search, and a real ARIA tree.",
+  alternates: { canonical: "/docs" },
+};
+
+# Introduction
+
+`react-virtual-checkbox-tree` is a checkbox tree for React that stays correct and stays fast when the
+tree gets big — and has no opinion at all about what a row looks like.
+
+Three things make it different from the alternatives:
+
+1. **Selection is stored sparsely.** Checking a folder of 50,000 leaves writes one entry, not 50,000.
+   Every parent's tri-state is derived on demand and memoized. Cascading a check measures at 1–3 µs
+   whether the tree holds a thousand nodes or a million.
+2. **Virtualization is built in, not homework.** Rows render through `@tanstack/react-virtual`
+   already wired up. Nothing to install, nothing to measure yourself.
+3. **It ships no CSS.** Not a stylesheet you override — none at all. Rows expose `data-state`,
+   `data-level` and `data-expanded`, and three render props let you supply your own checkbox,
+   expander and row body.
+
+<Callout type="note" title="Where this sits">
+Every *headless* tree leaves virtualization to you. Every *virtualized* tree comes attached to a
+design system or a licence. This one ships both, wired together, in about 5 kB.
+</Callout>
+
+## Why it exists
+
+I needed a checkbox tree. Not an exotic one — a folder hierarchy, tri-state parents, a search box,
+and enough rows that the browser would start to care.
+
+I spent the better part of a week on it. The most-downloaded option re-rendered every node on every
+click and had a nine-year-old performance issue still open. The polished ones came welded to a design
+system I wasn't using. The headless ones handed me primitives and left the checkbox math — the
+genuinely hard part, the part where a parent is half-checked because two of its nine grandchildren
+are on — as an exercise for the reader. Most didn't virtualize, so past a few thousand rows the whole
+thing folded.
+
+So I stopped looking and wrote the thing I had been looking for. If you're three days into the same
+search, this is for you.
+
+## What it does not do
+
+Stated plainly, because finding out after `npm i` is worse:
+
+- **No drag-and-drop, no inline rename, no context menus.** This is a selection control, not a file
+  manager. [react-arborist](https://github.com/brimdata/react-arborist) is the better tool for that.
+- **No lazy children.** The engine wants the whole map up front. You can grow `data` as pages arrive
+  and keep your state, but there's no `onLoadChildren`.
+- **No checkable folders.** Folders derive their state; they can't hold one of their own. So
+  "grant this whole department" as a value distinct from "all its current members" isn't expressible.
+- **Trees, not graphs.** A node under two parents keeps only the last parent it saw. The library warns
+  you in development when it spots this.
+
+These are scope decisions, not bugs. They're where competitors spend most of their bundle, and
+chasing them would cost the size that is the reason to pick this.
+
+## Next
+
+Install it and get a working tree on screen in about thirty seconds.
+
+- [Installation](/docs/installation)
+- [Quick start](/docs/quick-start)
+- [Checkbox semantics](/docs/checkbox-semantics) — the part worth understanding before you build on it

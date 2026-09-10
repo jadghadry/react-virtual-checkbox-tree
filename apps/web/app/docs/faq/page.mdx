@@ -1,0 +1,633 @@
+export const metadata = {
+  title: "FAQ — react-virtual-checkbox-tree",
+  description:
+    "Straight answers about scale, keyboard support, search, SSR, CommonJS, tree-shaking, lazy loading, and whether a 0.x library belongs in your product.",
+  alternates: { canonical: "/docs/faq" },
+};
+
+# FAQ
+
+The questions people ask before installing, answered first and explained second.
+
+## How many nodes can it handle?
+
+Hundreds of thousands, comfortably. A million is possible but you will feel the build.
+
+The renderer is not the limit — only the rows that fit the viewport are ever in the DOM, so a
+200,000-node tree mounts the same handful of elements as a 20-node one. The limit is the one-time
+cost of turning your `data` map into an engine, which is linear:
+
+| Nodes | Build engine | Cascade a check | Search keystroke |
+| --- | --- | --- | --- |
+| 11,110 | 9.6 ms | 1 µs | 957 µs |
+| 111,110 | 115 ms | 1 µs | 11.5 ms |
+| 1,111,110 | 1,955 ms | 1 µs | 169 ms |
+
+Up to roughly 100,000 nodes that is one 115 ms hit on mount — pay it once, memoize `data`, and you
+will not see it again. Beyond that, two seconds of synchronous work
+on the main thread is not something to hide behind a spinner — build the tree in a worker or page the
+data instead. [Performance](/docs/performance) has the full table and the methodology.
+
+## Does it support keyboard navigation?
+
+Yes, fully. `ArrowUp` / `ArrowDown` move between rows, `ArrowRight` / `ArrowLeft` open and close
+folders and walk to the parent, `Home` / `End` jump to the ends, `Space` toggles a checkbox, `Enter`
+expands a folder or checks a leaf, `*` expands everything, `Ctrl+A` / `Cmd+A` checks or clears the
+whole tree, and typing printable characters jumps to the next matching label.
+
+The whole tree is a single tab stop. Focus is tracked with `aria-activedescendant` on the container
+rather than by moving real DOM focus onto a row — which matters here, because a virtualized row can
+be unmounted at any moment and would take the focus with it. [Accessibility](/docs/accessibility)
+explains that decision and lists what is still missing (notably shift-range selection).
+
+## Does search match folder names?
+
+Yes, by default. `searchScope` defaults to `"all"`, so a query is tested against every label in the
+tree, folders included — and a folder that matches carries its **entire subtree** into the filtered
+view, because everything under it is part of what matched.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+engine.setSearchQuery("docs");
+engine.getMatchCount(); // 1  — the folder itself matched
+
+// And checking that folder selects everything it contains.
+engine.toggle("docs", true);
+engine.getAllChecked().sort(); // ["guide", "readme"]
+```
+
+Pass `searchScope="leaves"` to restore leaf-only matching, where folders appear only because they
+*contain* a match, never because they *are* one. Matching is case-insensitive and diacritic-
+insensitive, so `resume` finds `Résumé.pdf`, and nothing happens until the query reaches
+`minSearchChars` — three by default. See [Search](/docs/search).
+
+## Why does my tree reset when my component re-renders?
+
+It does not, and hasn't since v0.2.0. `<Tree>` creates one `Engine` on mount and keeps it for the
+component's lifetime; a new `data` object is applied to that engine through `setData()`, which swaps
+the structure in place and preserves selection, expansion and the active query for every node that
+still exists. State for nodes that disappeared is pruned. This is covered by a regression test.
+
+Two things will still reset it, and both are yours:
+
+**Remounting.** A changing `key` destroys the component and everything in it. Never write
+`key={JSON.stringify(data)}` or `key={data.length}` on a `<Tree>`.
+
+**Feeding a controlled prop back inconsistently.** If you pass `checkedItems`, it is the source of
+truth. Setting it to `[]` clears the selection, whatever the user just did.
+
+Memoize `data` anyway — not for correctness, for cost. The effect that calls `setData()` depends on
+`data`'s identity, so a fresh object on every render rebuilds the label, children and parent maps on
+every render. At 100,000 nodes that is 115 ms per keystroke in a form that happens to contain a tree.
+
+```tsx
+"use client";
+
+import { useMemo } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+type Row = { id: string; name: string; parentId: null | string };
+
+function buildTree(rows: Row[]): TreeDefinition {
+  const data: TreeDefinition = {
+    __root__: { id: "__root__", label: "root", children: [] },
+  };
+  for (const row of rows) data[row.id] = { id: row.id, label: row.name };
+  for (const row of rows) {
+    const parent = data[row.parentId ?? "__root__"];
+    if (parent) (parent.children ??= []).push(row.id);
+  }
+  return data;
+}
+
+export function ProjectTree({ rows }: { rows: Row[] }) {
+  const data = useMemo(() => buildTree(rows), [rows]);
+  return <Tree aria-label="Project files" data={data} height={480} />;
+}
+```
+
+## Can I use my own checkbox?
+
+Yes — pass `renderCheckbox`, and spread the `a11yProps` object it hands you onto whatever you render.
+That last part is not optional.
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function CustomBox() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      height={320}
+      renderCheckbox={({ a11yProps, checkedState }) => (
+        <span {...a11yProps} data-box={checkedState}>
+          {checkedState === "checked" ? "✔" : checkedState === "indeterminate" ? "–" : "○"}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+`a11yProps` is `aria-hidden: true` plus `tabIndex: -1`. The **row** is the `treeitem` and the row
+carries `aria-checked`, so an exposed checkbox inside it means every row is announced twice and `Tab`
+walks through one control per row. `renderExpander` works the same way, and `renderItem` replaces
+the row body — note that it receives a single object, not the item, so its signature is
+`renderItem({ checkedState, id, isActive, isExpanded, isFolder, item, level })`. See
+[Render props](/docs/rendering).
+
+## Why do I need a `__root__` node?
+
+Because the tree needs a single container for your top-level rows, and giving it one makes every
+operation uniform.
+
+`__root__` is a sentinel. It is never rendered — no row, no checkbox, no keyboard stop — and it is
+always expanded; `toggleExpanded("__root__")` is a deliberate no-op. With it, "expand this folder",
+"check this subtree" and "flatten this branch" are the same code path at every level including the
+top, and `checkAll()` is a single assignment written on the root rather than one per leaf.
+
+Three details to keep in mind: `getExpanded()` and `onExpand` **include** `"__root__"` in their
+arrays (echoing that back into `expandedItems` is safe), while `getNodeCount()` and `getAllChecked()`
+exclude it. The ID is configurable on the `Engine` class through its `rootId` option; `<Tree>` always
+uses `"__root__"`.
+
+## Can rows have different heights?
+
+Yes. `estimateSize` accepts a number or a function of the row index.
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function TallerEveryTenthRow() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      estimateSize={(index) => (index % 10 === 0 ? 48 : 32)}
+      height={480}
+    />
+  );
+}
+```
+
+It defaults to `32`. The index is the row's position in the *currently visible* list, which shifts as
+folders open and close — so if a row's height depends on the node rather than the position, look it
+up through the engine rather than hard-coding indices. There is no automatic measurement of rendered
+row content: the number you return is the height the virtualizer uses, and the row is rendered at
+exactly that height. [Virtualization](/docs/virtualization) covers `overscan` and the scroll
+container.
+
+## Does `onCheck` return folder IDs?
+
+No. `onCheck` is handed leaf IDs only, always, and folders never appear in it.
+
+A folder is not "checked" in this model — its state is derived from its descendants, which is what
+makes the indeterminate state fall out for free. Checking `src` in the canonical tree gives you:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function LeafIdsOnly() {
+  const [checked, setChecked] = useState<string[]>([]);
+
+  // Check src/ and this logs ["row", "tree", "engine"] — the three leaves under
+  // it. Never "src", never "ui".
+  return (
+    <>
+      <Tree
+        aria-label="Project files"
+        data={fileTree}
+        height={320}
+        onCheck={(ids) => setChecked([...ids].sort())}
+      />
+      <p>{checked.join(", ")}</p>
+    </>
+  );
+}
+```
+
+The array arrives in **traversal order**, not sorted, and traversal order is an implementation
+detail — the engine walks a stack, so siblings can come back in an order that looks arbitrary.
+Sort it yourself if you need a stable one, and compare selections as sets rather than by index.
+
+The same rule applies in the other direction: `checkedItems` and `engine.setChecked()` ignore folder
+IDs you pass them. If you need the folder-level view, ask for it — `engine.getViewState("src")`
+returns `"checked"`, `"unchecked"` or `"indeterminate"`, and `engine.getCheckedSubtrees()` returns
+the sparse assignments, where a checked folder *is* one entry. See
+[Checkbox semantics](/docs/checkbox-semantics).
+
+## What happens if I check a folder while a search filter is active?
+
+Only the leaves you can currently see get checked. Hidden ones are left exactly as they were.
+
+Filter to twelve matches, check the parent folder, clear the filter, and precisely those twelve are
+checked — not the eight hundred files that folder actually contains.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+engine.setSearchQuery("readme");   // docs/ now shows 1 of its 2 files
+engine.toggle("docs", true);
+
+engine.getAllChecked();            // ["readme"]  — guide.md was hidden, so untouched
+engine.setSearchQuery("");
+engine.getAllChecked();            // ["readme"]  — still
+engine.getState("docs");           // "indeterminate"
+```
+
+Folder checkboxes summarize the same way while filtering: `getViewState("docs")` reports `"checked"`
+during the search, because both — that is, the one — visible children are checked. `getState("docs")`
+ignores the filter and reports `"indeterminate"`. The row you see uses `getViewState`, which is what
+makes the filtered view internally consistent.
+
+There is one exception, and it is deliberate: a folder that *matched* the query carries its whole
+subtree into the visible set, so checking it selects everything under it. It all matched.
+
+## Does it work with Next.js, SSR and React Server Components?
+
+Yes. The main entry point ships with a `"use client"` banner, so you can import `<Tree>` directly
+into a server file without adding a directive yourself, and it renders on the client.
+
+```tsx
+// app/files/page.tsx — a Server Component. No "use client" needed here.
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function Page() {
+  return <Tree aria-label="Project files" data={fileTree} height={320} />;
+}
+```
+
+The moment you need state — a search box, a selection you read — that file becomes a client
+component like any other, because the state is yours, not the library's.
+
+For actual server-side work there is a second entry point,
+`react-virtual-checkbox-tree/engine`, which contains no React, no `"use client"` banner and no
+virtualizer. Import it in a Server Component, a route handler, a Node script or a Web Worker to
+resolve a selection or precompute a filtered set without touching the renderer.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+// Runs anywhere: a Server Component, a worker, a CLI.
+const engine = new Engine(fileTree);
+engine.toggle("src", true);
+export const preselected = engine.getAllChecked().sort(); // ["engine", "row", "tree"]
+```
+
+Vite and Remix need nothing special. [Installation](/docs/installation) has the framework notes.
+
+## Does it work with CommonJS and Jest?
+
+Yes. The package publishes both ESM and CommonJS builds with matching type declarations, and the
+export map is verified green by `publint` and `@arethetypeswrong/cli` on every release —
+`require()`, `import`, and node10 / node16 / bundler resolution all resolve correctly, including for
+the `/engine` subpath.
+
+```js
+const { Tree, Engine, CheckedState } = require("react-virtual-checkbox-tree");
+const { Engine: EngineOnly } = require("react-virtual-checkbox-tree/engine");
+```
+
+For Jest specifically, one thing will bite you, and it is not about module format. jsdom gives every
+element a zero-size bounding box, so the virtualizer computes a zero-height viewport and renders
+**no rows at all** — every query comes back empty and the failure looks like the tree is broken.
+Stub the measurements once, globally:
+
+```js
+// jest.setup.js
+// On Vitest this file is identical except for the first line, which becomes
+// `import "@testing-library/jest-dom/vitest";`.
+require("@testing-library/jest-dom");
+
+const RECT = { bottom: 0, height: 600, left: 0, right: 0, top: 0, width: 400, x: 0, y: 0 };
+
+Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+  configurable: true,
+  value() {
+    return { ...RECT, toJSON: () => RECT };
+  },
+});
+Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, value: 600 });
+Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 400 });
+Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 600 });
+Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, value: 400 });
+
+globalThis.ResizeObserver ??= class {
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+};
+
+Element.prototype.scrollTo ??= function scrollTo() {};
+```
+
+```js
+// jest.config.js
+module.exports = {
+  setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],
+  testEnvironment: "jsdom",
+};
+```
+
+The library's own suite runs on Vitest with the same setup file (`tests/setup.ts`). If you only test logic and not
+rendering, import the `/engine` entry instead — it is a plain class with no DOM dependency and needs
+none of the above.
+
+## Can I use it without the `<Tree>` component?
+
+Yes. `Engine` is the whole library minus the renderer, and it is a public, documented export.
+
+```ts
+import { CheckedState, Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree, { initialExpanded: ["src"] });
+
+const unsubscribe = engine.subscribe(() => {
+  // Called on every change. Re-read whatever you render from.
+  for (const row of engine.getVisibleItems()) {
+    console.log("  ".repeat(row.level) + engine.getLabel(row.id), engine.getViewState(row.id));
+  }
+});
+
+engine.toggle("src", true);
+engine.getViewState("ui"); // CheckedState.Checked
+unsubscribe();
+```
+
+It gives you flattening, tri-state math, sparse selection, expansion and search filtering, and it
+tells you nothing about how to draw a row. Use it behind your own renderer, behind a different
+virtualizer, in a Web Worker, in a CLI, or in tests. The [Engine reference](/docs/api/engine) lists
+every method; the [engine-only example](/examples/engine-only) is a hand-written renderer wired to
+it.
+
+## Is it tree-shakeable?
+
+Yes. The package declares `"sideEffects": false`, ships ESM as its primary format, and — more
+importantly than either — splits the parts that pull in dependencies into a separate entry point.
+
+| Import | Min + gzip | What comes with it |
+| --- | --- | --- |
+| `react-virtual-checkbox-tree/engine` | 3.1 kB | Nothing. No React, no virtualizer. |
+| `react-virtual-checkbox-tree` | 5.6 kB | The component and the engine. |
+
+Both figures are the library's own code, measured with esbuild — minified, gzipped, and bundled with
+`react`, `react-dom` and `@tanstack/react-virtual` marked external, since you are already shipping
+React and the virtualizer is a separate install. Regenerate them yourself:
+
+```bash
+npm run build --workspace react-virtual-checkbox-tree
+npm run size --workspace react-virtual-checkbox-tree
+```
+
+If you only need the logic, importing `/engine` keeps the virtualizer out of your bundle entirely
+rather than relying on a bundler to shake it out.
+
+## How is this different from `react-checkbox-tree`?
+
+The mental model is deliberately similar; the two differences that matter are virtualization and
+where the styling lives.
+
+| | react-virtual-checkbox-tree | react-checkbox-tree |
+| --- | --- | --- |
+| Rows in the DOM | Only what fits the viewport | Every expanded node |
+| Data shape | Flat `Record<string, TreeItem>` map | Nested `nodes` array |
+| Styling | None shipped — `data-*` hooks and render props | Ships CSS and an icon set |
+| Checked output | Leaf IDs only, always | Configurable via `checkModel` |
+| Folder checking | Derived only; no `checkStrictly` | Supported |
+| Headless core | `Engine`, usable without React | — |
+
+If your tree has a few hundred nodes and you like getting a stylesheet in the box,
+`react-checkbox-tree` is a reasonable choice and there is nothing to migrate away from. If your tree
+has fifty thousand nodes, the DOM is the problem and no amount of memoization fixes it.
+
+There is a prop-by-prop [migration map](/docs/migrating/react-checkbox-tree), and the
+[comparison pages](/compare) cover react-arborist, headless-tree, MUI X and rc-tree too.
+
+## Can I load children lazily?
+
+No. There is no `onLoadChildren` prop, no `isLoading` flag on a node, and no async anything in the
+API. This is a real limitation, not an oversight waiting on a release.
+
+What you do instead is rebuild `data` as pages arrive. Passing a new object is safe: the structure is
+swapped in place and the user's selection, expansion and active search query all survive for nodes
+that still exist.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const initial: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function PagedTree() {
+  const [data, setData] = useState(initial);
+
+  const loadTests = () =>
+    setData((prev) => ({
+      ...prev,
+      __root__: { id: "__root__", label: "root", children: ["docs", "src", "tests"] },
+      tests: { id: "tests", label: "tests", children: ["spec"] },
+      spec: { id: "spec", label: "engine.test.ts" },
+    }));
+
+  return (
+    <>
+      <button onClick={loadTests} type="button">
+        Load tests/
+      </button>
+      <Tree aria-label="Project files" data={data} height={320} />
+    </>
+  );
+}
+```
+
+The honest caveat: a folder whose children have not loaded yet is a **leaf** as far as the engine is
+concerned, because a node with no children is a leaf by definition — so it gets no expander and it is
+directly checkable. The usual workaround is a placeholder child you filter back out of the selection.
+[Loading data in pages](/docs/recipes/async-children) works through the whole pattern.
+
+## Does it do drag-and-drop, inline rename, or context menus?
+
+No, to all three, and they are explicit non-goals rather than a backlog.
+
+This library does one thing: select things from a tree that is too big to render. Reordering nodes,
+renaming them in place and right-click menus are a file-manager's problem, and building them here
+would mean opinions about drop targets, edit affordances and menu positioning that would be wrong for
+most consumers. `renderItem` gives you the row; a context menu you attach to what you render inside
+it will work fine.
+
+Also absent, for the same reason: checkable folders and a `checkStrictly` mode. Folders derive their
+state from their descendants, and that is the whole model.
+
+## Can a node have two parents?
+
+No. This is a tree, not a graph. A node listed under two parents keeps only the **last** parent seen,
+its checked state follows that branch alone, and you get a `console.warn` in development explaining
+it.
+
+Model it by duplicating the node under synthetic IDs — `"a/shared"` and `"b/shared"` — and mapping
+back to the real ID when you read the selection. The [data model page](/docs/data-model) has the
+snippet. The two copies are independent: checking one does not check the other.
+
+## Which React versions does it support?
+
+React 18 and React 19, declared as `"^18.0.0 || ^19.0.0"` peer dependencies for both `react` and
+`react-dom`. Node 18 or newer for anything running server-side.
+
+The only runtime dependency is `@tanstack/react-virtual` at `^3.0.0`, and it is absent from the
+`/engine` entry point entirely.
+
+## Is it production ready?
+
+Honestly: it depends on what you mean, and you should read the next three paragraphs rather than
+taking a yes or a no.
+
+**What is solid.** The behavior is tested — the engine and the component both have suites covering
+tri-state math, sparse selection, search semantics, `setData` preservation, keyboard navigation and
+the ARIA contract, including a 10,000-deep chain that would blow a recursive implementation's stack.
+The published package is validated by `publint` and `@arethetypeswrong/cli`, so ESM, CommonJS and
+every resolution mode are known-good rather than assumed. The performance numbers on this site are
+measured against the built bundle and reproducible with one command. It is MIT licensed, has one
+runtime dependency, and is published with provenance.
+
+**What is not.** This is **v0.2.0**. It is a 0.x library, which means the API will change before
+1.0 — prop names, engine method signatures, defaults. The install base is small, so you will not find
+a Stack Overflow answer for your edge case, and bugs that a widely-used library would have had shaken
+out by now may still be in here. There is no published VPAT and no third-party accessibility audit,
+which matters if you sell to anyone who asks for one. And several things are simply missing:
+no lazy loading, no drag-and-drop, no shift-range selection, no RTL testing.
+
+**So how do you decide?** Pin the exact version rather than a caret range, read the changelog before
+upgrading, and check that the [known gaps](/docs/accessibility) and non-goals above are not on your
+requirements list. If the answer to "what happens if this library stops being maintained" is "we vendor
+the `Engine` class, which is one file with no dependencies" — which is a genuinely reasonable answer
+here — then the risk is small. If you need a vendor-audited component with a support contract, this
+is not that.
+
+## Next
+
+- [Quick start](/docs/quick-start) — a working tree in one file
+- [Performance](/docs/performance) — the full benchmark table and what to do at each scale
+- [Accessibility](/docs/accessibility) — the ARIA contract, the keyboard map, and the known gaps

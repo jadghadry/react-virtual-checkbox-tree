@@ -1,0 +1,295 @@
+export const metadata = {
+  title: "<Tree> props — react-virtual-checkbox-tree",
+  description:
+    "Every prop on the Tree component with its default and exact semantics, plus the data attributes, the full keyboard map, and the TreeRef methods.",
+  alternates: { canonical: "/docs/api/tree" },
+};
+
+# `<Tree>`
+
+`<Tree>` is the only component the package exports. It creates one `Engine` on mount and keeps it for
+the lifetime of the component, renders the visible rows through `@tanstack/react-virtual`, and puts
+the ARIA tree contract on the scroll container and the rows.
+
+Every prop is optional except `data`.
+
+## Anatomy
+
+```tsx
+import { useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function FilePicker() {
+  const treeRef = useRef<TreeRef>(null);
+  const [checked, setChecked] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<string[]>(["src"]);
+  const [query, setQuery] = useState("");
+
+  return (
+    <Tree
+      aria-label="Project files"
+      checkedItems={checked}
+      className="rvct"
+      data={fileTree}
+      estimateSize={32}
+      expandedItems={expanded}
+      height={320}
+      indent={20}
+      minSearchChars={3}
+      onCheck={setChecked}
+      onExpand={setExpanded}
+      overscan={8}
+      ref={treeRef}
+      renderCheckbox={({ a11yProps, checkedState }) => (
+        <span {...a11yProps} data-box={checkedState} />
+      )}
+      renderExpander={({ a11yProps, isExpanded, onToggle }) => (
+        <button {...a11yProps} onClick={onToggle} type="button">
+          {isExpanded ? "−" : "+"}
+        </button>
+      )}
+      renderItem={({ item, level }) => (
+        <span>
+          {item.label} <small>L{level}</small>
+        </span>
+      )}
+      searchQuery={query}
+      searchScope="all"
+      style={{ fontFamily: "var(--font-mono)" }}
+    />
+  );
+}
+```
+
+The smallest thing that works is three lines:
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["src"] },
+  src: { id: "src", label: "src", children: ["engine"] },
+  engine: { id: "engine", label: "engine.ts" },
+};
+
+export function Minimal() {
+  return <Tree aria-label="Project files" data={fileTree} height={320} />;
+}
+```
+
+## Props
+
+Ordered by how often you will reach for them, not alphabetically.
+
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `data` | `TreeDefinition` | — | **Required.** The whole tree as a flat map of node ID to `TreeItem`. Must contain a `__root__` entry whose `children` are your top-level rows; the root itself is never rendered. Passing a new object is safe — the structure is swapped into the existing engine with `setData()`, so selection, expansion and the active query survive for nodes that still exist. |
+| `height` | `number \| string` | `"100%"` | Height of the scroll container. A number becomes pixels. `"100%"` only works if the parent has a resolved height — that is the single most common reason a tree renders zero rows. |
+| `checkedItems` | `string[] \| null` | `undefined` | Controlled list of checked **leaf** IDs. Folder IDs and IDs absent from `data` are ignored — a folder is never "checked", its state is derived. Applied silently, so echoing back what `onCheck` handed you does not re-fire `onCheck`. Pass `null` or omit it to leave selection uncontrolled. |
+| `onCheck` | `(checkedLeafIds: string[]) => void` | `undefined` | Fires on every selection change with **every checked leaf ID**, never a folder ID. This materializes the full list: about 3.7 ms for a tree of 100,000 leaves with everything checked. If that is too much, read `getCheckedSubtrees()` off the engine instead. |
+| `expandedItems` | `string[] \| null` | `undefined` | Controlled list of expanded folder IDs. The root is always kept expanded, and it is added before the equality check, so handing back the exact array `onExpand` gave you converges instead of looping. Pass `null` or omit it to leave expansion uncontrolled. |
+| `onExpand` | `(expandedFolderIds: string[]) => void` | `undefined` | Fires on every expansion change with every expanded folder ID. The list **includes `"__root__"`** — filter it out if you are persisting the value somewhere user-visible. |
+| `searchQuery` | `string` | `undefined` | Current query. Filters the view to matching nodes plus their ancestors, and auto-expands the branches that lead to a match. Matching is diacritic- and case-insensitive (`resume` matches `Résumé.pdf`). Clearing the query restores the expansion state the user had before searching. |
+| `searchScope` | `"all" \| "leaves"` | `"all"` | Which labels `searchQuery` matches. `"all"` matches folder labels too, and a matching folder carries its whole subtree into the filtered view — check it and you check everything under it. `"leaves"` matches only leaf labels; folders then appear only because they contain a match. |
+| `minSearchChars` | `number` | `3` | Characters required before `searchQuery` takes effect. Below it, search is inert and the tree shows its normal expanded view. Clamped to a minimum of `1`. Changing it re-applies the current query. |
+| `renderItem` | `(props: TreeItemRenderProps) => ReactNode` | `undefined` | Replaces the row body. Receives **an object**, not the item: `{ checkedState, id, isActive, isExpanded, isFolder, item, level }`. Defaults to `item.label`. |
+| `renderCheckbox` | `(props: TreeCheckboxRenderProps) => ReactNode` | `undefined` | Replaces the checkbox. Receives `{ a11yProps, checkedState, id, isActive, isExpanded, isFolder, item, level, onChange }`. You must spread `a11yProps` onto your control — see the callout below. |
+| `renderExpander` | `(props: TreeExpanderRenderProps) => ReactNode` | `undefined` | Replaces the default `+` / `−` expander. Called **only for folders**; leaves get no expander at all, only the leading indent. Receives `{ a11yProps, id, isExpanded, isFolder, item, level, onToggle }`. |
+| `estimateSize` | `((index: number) => number) \| number` | `32` | Row height in pixels, or a function returning the height of the row at `index`. Rows are absolutely positioned at exactly this height — the value is authoritative, not a guess, so a row whose content is taller will overflow. Keep the function referentially stable (`useCallback`) or the virtualizer re-measures on every render. |
+| `overscan` | `number` | `8` | Rows rendered above and below the viewport. Higher trades DOM nodes for fewer blank frames during fast scrolls. |
+| `indent` | `number` | `20` | Pixels of indentation per level. Applied as `paddingInlineStart` of `level * indent`, plus one extra `indent` on leaves so their labels line up with their siblings' labels rather than with the expander. |
+| `className` | `string` | `undefined` | Class applied to the scroll container. Rows are not reachable through it directly — target them with `[data-rvct-row]`. |
+| `style` | `CSSProperties` | `undefined` | Inline style for the scroll container. Merged **after** the component's own `height`, `overflow: auto` and `position: relative`, so it can override them. Overriding `overflow` or `position` will break virtualized scrolling. |
+| `aria-label` | `string` | `"Tree"` | Accessible name for the container. Ignored when `aria-labelledby` is set. |
+| `aria-labelledby` | `string` | `undefined` | ID of an element that labels the tree. When present, `aria-label` is not rendered at all. |
+
+<Callout type="warn" title="Spread a11yProps or every row is announced twice">
+`a11yProps` is `{ "aria-hidden": true, tabIndex: -1 }`. The **row** carries `role="treeitem"`,
+`aria-checked` and `aria-expanded`; the checkbox and expander inside it are decoration. If you drop
+`a11yProps`, a screen reader announces each row's state twice and `Tab` walks through hundreds of
+controls instead of landing once on the tree.
+</Callout>
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["src"] },
+  src: { id: "src", label: "src", children: ["engine"] },
+  engine: { id: "engine", label: "engine.ts" },
+};
+
+export function CustomCheckbox() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      height={320}
+      renderCheckbox={({ a11yProps, checkedState }) => (
+        // a11yProps must land on the element you render.
+        <span {...a11yProps} className="box" data-state={checkedState} />
+      )}
+    />
+  );
+}
+```
+
+## What a click does
+
+| Target | Folder row | Leaf row |
+| --- | --- | --- |
+| Anywhere on the row | Toggles expansion | Toggles the checkbox |
+| The checkbox | Toggles the checkbox, cascading through the subtree | Toggles the checkbox |
+| The expander | Toggles expansion | No expander is rendered |
+
+Clicking either control also makes that row the keyboard-active row, so arrow keys continue from
+where the mouse left off.
+
+## Data attributes
+
+These are the styling contract. Nothing else about the DOM is stable.
+
+| Attribute | Element | Value | Notes |
+| --- | --- | --- | --- |
+| `data-rvct-tree` | Scroll container | `""` | Present always. Use it to scope every other selector. |
+| `data-rvct-row` | Row | `""` | Present on every rendered row. |
+| `data-state` | Row | `"checked" \| "unchecked" \| "indeterminate"` | The tri-state. On folders it is derived from descendants — and while search is active, from the **visible** descendants only. |
+| `data-level` | Row | `"0"`, `"1"`, `"2"`, … | Depth below the root. Top-level rows are `0`. |
+| `data-expanded` | Row | `"true" \| "false"` | Folders only. **Absent** on leaves, so `[data-expanded]` selects exactly the folders. |
+| `data-leaf` | Row | `""` | Leaves only. Absent on folders. |
+| `data-active` | Row | `""` | Present on the single keyboard-active row (the one `aria-activedescendant` points at). Absent otherwise. |
+
+Three class names ship on the default markup as well: `rvct-row` on the row, `rvct-checkbox` on the
+span wrapping the checkbox, and `rvct-label` on the span wrapping the row body. `rvct-expander` is on
+the default expander button. Prefer the data attributes; the classes exist so a stylesheet written
+against them keeps working when you swap in a custom renderer.
+
+```css
+[data-rvct-tree] [data-rvct-row][data-state="indeterminate"] {
+  color: var(--color-warn);
+}
+
+[data-rvct-tree] [data-rvct-row][data-active] {
+  outline: 1px solid var(--color-accent);
+}
+
+[data-rvct-tree] [data-rvct-row][data-leaf] {
+  font-style: italic;
+}
+```
+
+## Keyboard interactions
+
+The container is the single tab stop (`tabIndex={0}`). DOM focus never moves onto a row — the active
+row is tracked with `aria-activedescendant` — precisely so that virtualization unmounting the active
+row cannot destroy the focus.
+
+| Key | Behavior |
+| --- | --- |
+| `Tab` | Moves into and out of the tree. One stop for the whole control, however many rows are rendered. Not intercepted; this is ordinary browser behavior. |
+| `ArrowDown` | Moves to the next visible row. With no active row, moves to the first. Stops at the last row. |
+| `ArrowUp` | Moves to the previous visible row. With no active row, moves to the **last**. Stops at the first row. |
+| `ArrowRight` | On a collapsed folder, expands it. On an already-expanded folder, moves to its first child. On a leaf, does nothing. With no active row, moves to the first row. |
+| `ArrowLeft` | On an expanded folder, collapses it. Otherwise moves to the parent row. At the top level, does nothing. With no active row, moves to the first row. |
+| `Home` | Moves to the first visible row. |
+| `End` | Moves to the last visible row. |
+| `Space` | Toggles the active row's checkbox. On a folder this cascades through its subtree — through its **visible** subtree while search is active. |
+| `Enter` | On a folder, toggles expansion. On a leaf, toggles the checkbox. |
+| `*` | Expands every folder in the tree, not just the active row's siblings. |
+| `Ctrl`/`Cmd` + `A` | Checks every leaf. If everything is already checked, clears the selection instead. One engine write either way. |
+| Printable characters | Type-ahead. Jumps to the next row whose label starts with what you typed, wrapping around the end of the list. The buffer resets after 600 ms of no typing; a single character advances to the *next* match, so pressing the same letter repeatedly cycles through them. |
+
+Every move of the active row scrolls it into view. Arrow keys, `Home`, `End`, `Space`, `Enter`, `*`
+and `Ctrl`/`Cmd` + `A` all call `preventDefault()`, so the page does not scroll underneath the tree.
+
+## `TreeRef`
+
+Attach a ref to reach the imperative escape hatches.
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `expandAll` | `() => void` | Expands every folder in the tree. |
+| `collapseAll` | `() => void` | Collapses every folder except the root, which is structural and stays open. |
+| `scrollToId` | `(id: string) => void` | Expands the node's ancestors, then scrolls it into view. Does not move the keyboard-active row and does not focus the tree. |
+| `focusId` | `(id: string) => void` | Expands ancestors, scrolls the node into view, makes it the keyboard-active row, and moves DOM focus to the tree container. Use this when a user action outside the tree should hand the keyboard back to it. |
+| `getEngine` | `() => Engine` | The live `Engine` instance backing this tree. Everything the props do not cover — `getCheckedSubtrees()`, `getMatchCount()`, `getState()` versus `getViewState()` — lives here. |
+
+```tsx
+import { useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function WithToolbar() {
+  const treeRef = useRef<TreeRef>(null);
+
+  return (
+    <>
+      <button onClick={() => treeRef.current?.expandAll()} type="button">
+        Expand all
+      </button>
+      <button onClick={() => treeRef.current?.collapseAll()} type="button">
+        Collapse all
+      </button>
+      <button onClick={() => treeRef.current?.focusId("row")} type="button">
+        Go to row.tsx
+      </button>
+      <button
+        onClick={() => {
+          const engine = treeRef.current?.getEngine();
+          console.log(engine?.getCheckedSubtrees());
+        }}
+        type="button"
+      >
+        Log the sparse selection
+      </button>
+
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={treeRef} />
+    </>
+  );
+}
+```
+
+## ARIA the component emits
+
+You do not set any of these; they are listed so you can assert on them in your own tests.
+
+| Attribute | Element | Value |
+| --- | --- | --- |
+| `role="tree"` | Container | Always. |
+| `aria-multiselectable` | Container | Always `true`. |
+| `aria-activedescendant` | Container | The DOM ID of the active row, or absent when no row is active or the active row has been filtered away. |
+| `role="treeitem"` | Row | Always. |
+| `aria-checked` | Row | `"true"`, `"false"` or `"mixed"`. The tree uses `aria-checked`, not `aria-selected`. |
+| `aria-expanded` | Row | `true` / `false` on folders. Absent on leaves. |
+| `aria-level` | Row | 1-based depth, so a top-level row is `1` while its `data-level` is `0`. |
+| `aria-posinset` / `aria-setsize` | Row | Position among visible siblings, and how many there are. Virtualization flattens the DOM and there are no `role="group"` wrappers, so these are what keep the nesting audible. |
+
+<Callout type="note" title="Server rendering">
+The package entry ships a `"use client"` banner, so `<Tree>` is a client component wherever you
+import it. If you need tree logic on the server — counting nodes, pre-computing a selection — import
+the [Engine](/docs/api/engine) from `react-virtual-checkbox-tree/engine`, which pulls in neither
+React nor the virtualizer.
+</Callout>

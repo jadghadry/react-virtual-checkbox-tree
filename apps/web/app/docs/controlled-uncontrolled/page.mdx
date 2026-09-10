@@ -1,0 +1,417 @@
+export const metadata = {
+  title: "Controlled & uncontrolled — react-virtual-checkbox-tree",
+  description:
+    "Control selection, expansion and search independently or together, plus the convergence rule that stops onExpand from looping.",
+  alternates: { canonical: "/docs/controlled-uncontrolled" },
+};
+
+# Controlled and uncontrolled
+
+There are three controllable axes — selection, expansion and search — and they are independent. You
+can control none, one, two or all three, and mixing them is normal rather than a compromise.
+
+| Axis | Input prop | Output prop | Uncontrolled by |
+| --- | --- | --- | --- |
+| Selection | `checkedItems` | `onCheck` | Omitting `checkedItems`, or passing `null` |
+| Expansion | `expandedItems` | `onExpand` | Omitting `expandedItems`, or passing `null` |
+| Search | `searchQuery` | none | Omitting `searchQuery` |
+
+Out of the box, controlling nothing gives you a fully working tree:
+
+```tsx
+"use client";
+
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function Uncontrolled() {
+  return <Tree aria-label="Project files" data={fileTree} height={320} />;
+}
+```
+
+## Is the tree ever strictly controlled?
+
+No, and this is the most important sentence on the page. A click on a row updates the engine
+immediately and re-renders, whether or not you feed the value back. `checkedItems` and
+`expandedItems` **push** a value in; they do not gate the interaction.
+
+So there is no "controlled but frozen" mode. If you want a row that cannot be checked, do not render
+it, or intercept in `renderCheckbox`. Passing a stale `checkedItems` will not hold the tree still —
+it will only reset the selection the next time that array's identity changes.
+
+## Controlling the selection
+
+Pass `checkedItems` a list of checked **leaf** IDs, and read them back from `onCheck`.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function ControlledSelection() {
+  const [checked, setChecked] = useState<string[]>(["readme"]);
+
+  return (
+    <>
+      <p>{checked.length} files selected</p>
+      <button onClick={() => setChecked([])} type="button">
+        Clear
+      </button>
+      <button onClick={() => setChecked(["tree", "row"])} type="button">
+        Select the UI files
+      </button>
+      <Tree
+        aria-label="Project files"
+        checkedItems={checked}
+        data={fileTree}
+        height={320}
+        onCheck={setChecked}
+      />
+    </>
+  );
+}
+```
+
+Four behaviors to rely on:
+
+- **Folder IDs are ignored.** `checkedItems={["docs", "readme"]}` selects `readme` only. Unknown IDs
+  are dropped the same way.
+- **Pushing a value in does not re-fire `onCheck`.** The tree applies `checkedItems` silently, so
+  `onCheck` fires for user interaction only. You will not get an echo of your own `setState`.
+- **An identical value is a no-op.** Setting the same selection twice changes nothing and notifies
+  nothing, so `onCheck` into `setState` into `checkedItems` settles in one round.
+- **`onCheck` does not fire on mount.** Neither does `onExpand` — unless the `expandedItems` you
+  pass differs from the tree's initial expansion, in which case applying it counts as a change and
+  notifies once.
+
+## Controlling expansion
+
+Same shape, with folder IDs.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function ControlledExpansion() {
+  const [expanded, setExpanded] = useState<string[]>(["src", "ui"]);
+
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      expandedItems={expanded}
+      height={320}
+      onExpand={setExpanded}
+    />
+  );
+}
+```
+
+`onExpand` hands you every expanded folder ID **including `"__root__"`**, because the root is always
+expanded. That is not a leak you need to clean up — see the next section.
+
+### The convergence rule
+
+The root is always kept expanded, and it is added to the incoming list *before* the equality check.
+Echoing `onExpand`'s value straight back into `expandedItems` therefore settles instead of looping,
+and so does echoing it back with the root filtered out.
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+engine.setExpanded(["docs"]);
+const value = engine.getExpanded(); // ["docs", "__root__"] — the root is always in there
+
+// Both of these are no-ops — no notification, no re-render, no loop:
+engine.setExpanded(value);
+engine.setExpanded(value.filter((id) => id !== "__root__"));
+```
+
+Order is not part of the contract — `getExpanded()` returns the set in insertion order, so compare
+these arrays as sets rather than element by element.
+
+Concretely, the cycle for one click is: user expands `docs` → `onExpand(["__root__", "docs"])` →
+your `setState` → re-render with the new `expandedItems` → the tree compares, finds them equal, and
+stops. One round trip, no oscillation.
+
+<Callout type="note" title="Pushing expansion in does fire onExpand">
+Unlike `checkedItems`, an `expandedItems` value that actually changes the expansion notifies
+`onExpand` with the normalized result. That is what makes the equality check load-bearing: it is
+what terminates the cycle.
+</Callout>
+
+## Controlling search
+
+Search has no output prop, because the tree contains no search input. It renders rows and nothing
+else. `searchQuery` is the only way a query gets in, so search is always yours to own.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function ControlledSearch() {
+  const [query, setQuery] = useState("");
+
+  return (
+    <>
+      <input
+        aria-label="Filter files"
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files"
+        value={query}
+      />
+      <Tree
+        aria-label="Project files"
+        data={fileTree}
+        height={320}
+        minSearchChars={3}
+        searchQuery={query}
+        searchScope="all"
+      />
+    </>
+  );
+}
+```
+
+`minSearchChars` and `searchScope` are live props too: changing either re-applies the current query
+against the new rules. [Search](/docs/search) covers what the filter does to the visible set.
+
+## All three at once
+
+Nothing special is required to combine them — each prop drives its own axis.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function FilePicker() {
+  const [checked, setChecked] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<string[]>(["src"]);
+  const [query, setQuery] = useState("");
+
+  return (
+    <div>
+      <input
+        aria-label="Filter files"
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter files"
+        value={query}
+      />
+
+      <p>
+        {checked.length} selected · {expanded.length - 1} folders open
+      </p>
+
+      <Tree
+        aria-label="Project files"
+        checkedItems={checked}
+        data={fileTree}
+        expandedItems={expanded}
+        height={320}
+        onCheck={setChecked}
+        onExpand={setExpanded}
+        searchQuery={query}
+      />
+
+      <button onClick={() => setChecked([])} type="button">
+        Clear selection
+      </button>
+    </div>
+  );
+}
+```
+
+`expanded.length - 1` because `"__root__"` is always in that array.
+
+<Callout type="tip" title="Expansion and search interact">
+While a query is active the tree manages expansion itself — it opens the ancestors of every match —
+and your `expandedItems` will be overwritten for the duration. Clearing the query restores the
+expansion the user had before searching. Control expansion *and* search only when you actually want
+to script both.
+</Callout>
+
+## Common mistakes
+
+### Passing an inline array literal
+
+```tsx
+// Wrong: a new array identity on every parent render.
+<Tree checkedItems={[]} data={fileTree} height={320} />
+```
+
+`[]` is not "start empty" — it is "the selection is empty", reasserted every time the array's
+identity changes. Because the parent re-renders for reasons that have nothing to do with the tree,
+this reads as "my selection randomly clears". Put the value in state, or `useMemo` it, or omit the
+prop entirely if you want an uncontrolled tree with an empty initial selection.
+
+### Passing `checkedItems` without closing the loop
+
+```tsx
+// Wrong: `checked` is now a lie — the user's clicks never reach it.
+const [checked] = useState<string[]>(["readme"]);
+<Tree checkedItems={checked} data={fileTree} height={320} onCheck={(ids) => console.log(ids)} />
+```
+
+Nothing breaks immediately: clicks land, rows update, and your stale array is never re-applied
+because its identity never changes. The bug appears later, when something *does* set that state —
+a "Clear" button, a fetch resolving — and the tree snaps back to a selection the user abandoned ten
+clicks ago.
+
+Either close the loop with `onCheck={setChecked}`, or drop `checkedItems` entirely and read the
+selection when you need it through `ref.current.getEngine().getAllChecked()`.
+
+### Expecting folder IDs back from `onCheck`
+
+`onCheck` returns leaf IDs only, always. A folder is not checked; its state is derived. If you need
+"is `src` fully selected?", ask the engine: `ref.current.getEngine().getViewState("src")`. See
+[Checkbox semantics](/docs/checkbox-semantics).
+
+### Remounting the tree to apply new data
+
+```tsx
+// Wrong: throws away selection, expansion, scroll position and the active query.
+<Tree data={data} height={320} key={JSON.stringify(data)} />
+```
+
+Passing a new `data` object is already safe. The structure is swapped in place and state survives
+for every node that still exists. Never key the tree on its data.
+
+### Storing every leaf ID for a huge selection
+
+Round-tripping `onCheck` through state is fine at thousands of nodes and wasteful at hundreds of
+thousands — reading the full selection costs 3.7 ms at 111,110 nodes, every change. At that scale,
+skip `onCheck` (the list is only materialized when you pass the prop) and persist
+`getCheckedSubtrees()` instead.
+
+### Assuming a strictly controlled tree will block a click
+
+It will not. The click lands, the engine updates, the row re-renders. Controlled props are an input
+channel, not a gate.
+
+## The escape hatch
+
+Anything the props do not cover is on the engine, reachable through the ref. This is the read-mostly
+alternative to controlling an axis:
+
+```tsx
+"use client";
+
+import { useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function WithRef() {
+  const ref = useRef<TreeRef>(null);
+
+  return (
+    <>
+      <button onClick={() => ref.current?.expandAll()} type="button">
+        Expand all
+      </button>
+      <button onClick={() => ref.current?.collapseAll()} type="button">
+        Collapse all
+      </button>
+      <button onClick={() => ref.current?.focusId("row")} type="button">
+        Go to row.tsx
+      </button>
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={ref} />
+    </>
+  );
+}
+```
+
+## Next
+
+- [Search](/docs/search) — what `searchQuery` does to expansion and toggling
+- [Imperative API](/docs/imperative-api) — every method on `TreeRef`

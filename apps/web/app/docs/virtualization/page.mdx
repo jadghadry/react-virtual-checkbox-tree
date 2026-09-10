@@ -1,0 +1,271 @@
+export const metadata = {
+  title: "Virtualization — react-virtual-checkbox-tree",
+  description:
+    "What actually mounts, estimateSize as a number or a function, overscan, the scroll container height requirement, indent, and scrollToId.",
+  alternates: { canonical: "/docs/virtualization" },
+};
+
+# Virtualization
+
+Only the rows in view are in the DOM. A tree of 200,000 nodes mounts the same handful of elements as
+a tree of 20 — the visible rows, plus `overscan` more above and below.
+
+Virtualization is built in and always on. There is no prop to turn it off, and nothing to install:
+`@tanstack/react-virtual` is a dependency of the package and comes already wired to the engine.
+
+## What does the DOM look like?
+
+Three levels: a scroll container, a spacer sized to the whole list, and the mounted rows, absolutely
+positioned inside it.
+
+```html
+<div role="tree" data-rvct-tree tabindex="0"
+     style="height: 320px; overflow: auto; position: relative">
+  <div style="height: 3555552px; position: relative">
+    <div role="treeitem" data-rvct-row data-level="0" data-state="unchecked"
+         style="position: absolute; transform: translateY(32768px); height: 32px">…</div>
+    <div role="treeitem" data-rvct-row data-level="1" data-state="checked"
+         style="position: absolute; transform: translateY(32800px); height: 32px">…</div>
+    <!-- ~20 more, and nothing else -->
+  </div>
+</div>
+```
+
+The spacer's height is the row count times the row height, which is what gives you a real scrollbar.
+Rows are keyed by node ID, so React reuses the right elements as you scroll and as folders open.
+
+## Does the scroll container need a height?
+
+Yes, and this is the first thing to check when a tree renders as nothing.
+
+`height` defaults to `"100%"`, which resolves to zero inside a parent that has no height of its own.
+Either give the tree an explicit height, or give its parent one.
+
+```tsx
+// Explicit — simplest, and what every example in these docs does.
+<Tree aria-label="Project files" data={fileTree} height={480} />
+
+// A CSS length works too.
+<Tree aria-label="Project files" data={fileTree} height="60vh" />
+
+// Or inherit, if the parent is actually sized.
+<div style={{ height: "100%" }}>
+  <Tree aria-label="Project files" data={fileTree} />
+</div>
+```
+
+A number is treated as pixels. The container also sets `overflow: auto` and `position: relative` for
+you; anything you pass in `style` is applied afterwards and wins, so you can override those if you
+know why you are doing it.
+
+## How do I set the row height?
+
+`estimateSize`, a number or a function of the row index. It defaults to `32`.
+
+```tsx
+<Tree aria-label="Project files" data={fileTree} estimateSize={44} height={480} />
+```
+
+Despite the name, this is not a hint that gets corrected later. The value it returns becomes the
+row's actual `height`, and the spacer's total height is computed from it. There is no content
+measurement anywhere in the component: nothing calls `measureElement`, so a row whose content is
+taller than the number you gave will overflow its own box rather than push the next row down.
+
+Rows also render with `white-space: nowrap` and `width: max-content` over a `min-width: 100%`, so
+long labels extend the row and scroll the container horizontally instead of wrapping.
+
+## Can rows have different heights?
+
+Yes, by passing a function of the row index. Two constraints come with it, and both follow from the
+same fact: nothing measures a rendered row.
+
+- The index is a position in the **currently visible** list — the list `engine.getVisibleItems()`
+  returns — which shifts as folders open, close and get filtered.
+- The function must return the right answer during the first render. Row heights are computed when
+  the row list is laid out and recomputed only when the row count changes, never because your
+  function changed. Reaching through the tree's `ref` does not work here: a ref is still `null`
+  while the first render runs, so every row would take the fallback height and nothing would go back
+  to correct it.
+
+The reliable pattern is to compute the row list yourself, from the same data and the same expansion
+state you hand the tree. A second `Engine` over the same inputs produces the same row order, and
+unlike a ref it exists during the first render.
+
+```tsx
+"use client";
+
+import { useCallback, useMemo, useState } from "react";
+import { Engine, Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function VariableRows() {
+  const [expanded, setExpanded] = useState<string[]>(["src", "ui"]);
+
+  const rows = useMemo(() => {
+    const mirror = new Engine(fileTree);
+    mirror.setExpanded(expanded);
+    return mirror.getVisibleItems();
+  }, [expanded]);
+
+  // Folders get a taller row than files.
+  const estimateSize = useCallback(
+    (index: number) => (rows[index]?.isFolder ? 40 : 28),
+    [rows]
+  );
+
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      estimateSize={estimateSize}
+      expandedItems={expanded}
+      height={320}
+      onExpand={setExpanded}
+    />
+  );
+}
+```
+
+Controlling expansion is what keeps the mirror honest — the two engines only agree while they are
+fed the same expansion. If you also pass `searchQuery`, call `mirror.setSearchQuery(query)` with the
+same value, or the indexes will drift apart while the filter is on.
+
+<Callout type="warn" title="Make it a pure function of index">
+Nothing measures rendered rows, so whatever the function returns when an index is laid out is what
+that row gets. A function that depends on state which is not ready yet — a ref that is still `null`
+on the first pass, a fetch that has not resolved — will lay out with the wrong numbers and will not
+be asked again until the row count changes. If you cannot answer "how tall is row `n`?"
+deterministically, keep the height uniform.
+</Callout>
+
+## What does `overscan` do?
+
+It is the number of rows rendered above and below the viewport, and it defaults to `8`.
+
+Raising it costs DOM nodes on every scroll frame; lowering it makes blank space more likely at the
+edges during a fast flick. `8` is a reasonable default for 32-pixel rows; if your rows are much
+shorter, or your users scroll with a trackpad at speed, `16` is a defensible change. There is no
+setting that removes the trade-off.
+
+```tsx
+<Tree aria-label="Project files" data={fileTree} height={480} overscan={16} />
+```
+
+## What does `indent` do?
+
+Pixels of indentation per level, defaulting to `20`. A row's leading padding is
+`level * indent`, plus one extra `indent` for leaves — that extra step is what lines a file's
+checkbox up with the checkbox of a sibling folder, which has an expander in front of it.
+
+```tsx
+<Tree aria-label="Project files" data={fileTree} height={480} indent={28} />
+```
+
+Because indentation is padding on an absolutely positioned row, it does not affect row height and
+costs nothing to change.
+
+## How do I scroll to a node?
+
+`scrollToId` scrolls; `focusId` scrolls and moves keyboard focus to the row. Both expand the node's
+ancestors first, so a target inside collapsed folders becomes reachable rather than silently doing
+nothing.
+
+```tsx
+"use client";
+
+import { useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function JumpToRow() {
+  const ref = useRef<TreeRef>(null);
+
+  return (
+    <>
+      <button onClick={() => ref.current?.scrollToId("row")} type="button">
+        Scroll to row.tsx
+      </button>
+      <button onClick={() => ref.current?.focusId("row")} type="button">
+        Focus row.tsx
+      </button>
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={ref} />
+    </>
+  );
+}
+```
+
+`focusId` puts DOM focus on the container and points `aria-activedescendant` at the row. It does not
+put focus on the row itself — nothing ever does. That is the design: virtualization can unmount the
+active row at any moment, and a row holding real focus would take the focus with it when it goes.
+
+## What does virtualization cost you?
+
+Off-screen rows are genuinely absent from the document, not hidden with CSS. Four consequences,
+stated plainly:
+
+**Browser find (Cmd+F) only sees mounted rows.** A user searching the page for a filename 4,000 rows
+down will not find it. This is why the library has its own [search](/docs/search), and why wiring an
+input to `searchQuery` is not optional polish on a large tree.
+
+**Tests only see mounted rows.** `getAllByRole("treeitem")` returns what is mounted, which in jsdom
+means the rows that fit the height you passed. Give the tree an explicit `height`, and assert against
+the engine — `ref.current.getEngine().getAllChecked()` or `indexOf(id)` — when you care about a node
+that is off screen.
+
+**Select-all and print capture only mounted rows.** Dragging a selection down the list, or printing
+the page, gets you what was on screen, not the tree.
+
+**Search engines see none of it.** The component ships a `"use client"` banner and the rows are
+produced in the browser, so tree content is not in the server-rendered HTML. If the *content* of the
+tree needs to be indexed, render a plain semantic list for crawlers alongside the interactive tree —
+the tree is a control, not a document.
+
+## When is the row list rebuilt?
+
+When something changes which rows are visible or in what order: expansion, a search query, or new
+`data`. Flattening the whole tree is the cost:
+
+| Nodes | Flatten the visible rows |
+| --- | --- |
+| 1,110 | 0.3 ms |
+| 11,110 | 2.2 ms |
+| 111,110 | 25 ms |
+| 1,111,110 | 684 ms |
+
+Median of 5 runs, Node 26 on Apple Silicon.
+
+Those numbers are the fully expanded case, so they are the ceiling — `expandAll()` on a
+111,110-node tree, or the first flatten after `collapseAll()`, is what costs 25 ms. A single folder
+opening only re-flattens the rows that are actually visible, which is far fewer.
+
+Checking a box costs none of this. A selection change deliberately does not touch the structure
+version, so the flattened list stays cached and the same array comes back — the rows re-render with
+new states, and nothing is recomputed about layout.
+
+## Next
+
+- [Search](/docs/search) — the reason Cmd+F is not the answer
+- [Accessibility](/docs/accessibility) — how `aria-activedescendant` keeps the keyboard working
+- [Performance](/docs/performance) — the rest of the measured numbers

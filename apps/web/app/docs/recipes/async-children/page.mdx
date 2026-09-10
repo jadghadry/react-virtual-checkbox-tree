@@ -1,0 +1,476 @@
+export const metadata = {
+  title: "Loading data in pages — react-virtual-checkbox-tree",
+  description:
+    "There is no lazy loading. What works instead: accumulate pages into one data object, let setData preserve state, and fetch a folder's children on expand.",
+  alternates: { canonical: "/docs/recipes/async-children" },
+};
+
+# Loading data in pages
+
+There is no lazy loading in this library. No `onLoadChildren` prop, no async children resolver, no
+"expanding a folder fetches it" hook. The engine wants the whole `TreeDefinition` map up front, and
+that is a deliberate limitation, not an oversight.
+
+What does work is growing that map. Every time you hand `<Tree>` a new `data` object it calls
+`engine.setData()`, which swaps the structure **in place** and keeps selection, expansion and the
+active search query for every node that still exists. So you can accumulate pages into one object and
+re-render, and the user does not lose what they were doing.
+
+This page is the honest version of that: the patterns, what they cost, and where they are awkward.
+
+## What survives when data changes?
+
+| State | Survives a `data` swap? |
+| --- | --- |
+| Selection | Yes, for nodes that still exist. Assignments for deleted nodes are pruned. |
+| Expansion | Yes, for folders that still exist and are still folders. |
+| Active search query | Yes — it is re-run against the new structure. |
+| Scroll offset | The container's `scrollTop` is untouched, but rows inserted above it will shift what is at that offset. |
+| Keyboard-active row | Only if that node is still visible. If it disappeared, `aria-activedescendant` is dropped and the next ArrowDown starts from the first row again (ArrowUp from the last). |
+
+The one thing to get right: `<Tree>` reacts to `data` **identity**, not contents. Mutating the object
+you already passed changes nothing on screen. Build a new object.
+
+## How do I paginate an API into one tree?
+
+Accumulate the raw rows, derive `data` from them, and let the effect re-run.
+
+```tsx
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+type ApiRow = { id: string; kind: "file" | "folder"; name: string; parentId: null | string };
+type ApiPage = { nextCursor: null | string; rows: ApiRow[] };
+
+const LOADING_ID = "__loading__";
+
+function buildData(rows: ApiRow[], loading: boolean): TreeDefinition {
+  const data: TreeDefinition = { __root__: { id: "__root__", label: "root", children: [] } };
+  const childIds: Record<string, string[]> = { __root__: [] };
+
+  for (const row of rows) {
+    data[row.id] = { id: row.id, label: row.name, data: { kind: row.kind } };
+    if (row.kind === "folder") childIds[row.id] = [];
+  }
+
+  for (const row of rows) {
+    // A row whose parent has not arrived yet simply waits for the page that
+    // brings it. Dangling child IDs are dropped by the engine anyway, with a
+    // console warning in development.
+    childIds[row.parentId ?? "__root__"]?.push(row.id);
+  }
+
+  if (loading) {
+    data[LOADING_ID] = { id: LOADING_ID, label: "Loading…", data: { kind: "status" } };
+    childIds.__root__.push(LOADING_ID);
+  }
+
+  for (const [id, ids] of Object.entries(childIds)) {
+    if (ids.length > 0) data[id].children = ids;
+  }
+
+  return data;
+}
+
+export function PaginatedTree() {
+  const [rows, setRows] = useState<ApiRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      let cursor: null | string = null;
+      do {
+        const url = cursor ? `/api/tree?cursor=${encodeURIComponent(cursor)}` : "/api/tree";
+        const page: ApiPage = await fetch(url).then((response) => response.json());
+        if (cancelled) return;
+        setRows((prev) => [...prev, ...page.rows]);
+        cursor = page.nextCursor;
+      } while (cursor);
+      if (!cancelled) setLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const data = useMemo(() => buildData(rows, loading), [loading, rows]);
+
+  return <Tree aria-label="Project files" data={data} height={480} />;
+}
+```
+
+The loading row is an ordinary node with an id you control. Because it has no children it is a leaf,
+which means it is checkable — see [the caveat below](#what-does-a-fake-row-cost-you).
+
+<Callout type="warn" title="A folder with no loaded children is a leaf">
+`buildData` only sets `children` when a folder actually has some. Until its first child arrives, a
+folder renders as a checkable leaf with no expander. If that matters — and for the expand-to-load
+pattern below it is fatal — give every folder a placeholder child from the start.
+</Callout>
+
+## What does this cost?
+
+Each new `data` object rebuilds the engine's structure, which is linear in node count:
+
+| nodes | build engine | flatten rows |
+| --- | --- | --- |
+| 1,110 | 1.3 ms | 0.3 ms |
+| 11,110 | 9.6 ms | 2.2 ms |
+| 111,110 | 115 ms | 25 ms |
+| 1,111,110 | 1,955 ms | 684 ms |
+
+Median of 5 runs, Node 26 / Apple Silicon, from `npm run bench`. Building the engine is what
+`setData` re-runs on every new `data` object; flattening happens on the next render.
+
+So the total work of paginating is the sum over pages of the tree size *at that point* — quadratic in
+the number of pages. Twenty pages of 500 nodes is nothing. Five hundred pages of 200 nodes ends with
+five hundred rebuilds over a tree approaching 100,000 nodes, where a single rebuild is already the
+115 ms measured at 111,110 — and the tab will stutter.
+
+Two ways out, in order of preference: **ask for bigger pages**, or **batch the commits**.
+
+```tsx
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Tree } from "react-virtual-checkbox-tree";
+
+// The `buildData` from the previous example, moved into its own module.
+import { buildData } from "./build-data";
+
+type ApiRow = { id: string; kind: "file" | "folder"; name: string; parentId: null | string };
+type ApiPage = { nextCursor: null | string; rows: ApiRow[] };
+
+const FLUSH_MS = 250;
+
+export function BatchedPaginatedTree() {
+  const [rows, setRows] = useState<ApiRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const pending = useRef<ApiRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let flushTimer: null | ReturnType<typeof setTimeout> = null;
+
+    // Pages land in a ref and are committed to React state at most every
+    // FLUSH_MS, so 500 small pages cost a handful of rebuilds instead of 500.
+    const flush = () => {
+      flushTimer = null;
+      if (pending.current.length === 0) return;
+      const batch = pending.current;
+      pending.current = [];
+      setRows((prev) => [...prev, ...batch]);
+    };
+
+    void (async () => {
+      let cursor: null | string = null;
+      do {
+        const url = cursor ? `/api/tree?cursor=${encodeURIComponent(cursor)}` : "/api/tree";
+        const page: ApiPage = await fetch(url).then((response) => response.json());
+        if (cancelled) return;
+        pending.current.push(...page.rows);
+        if (flushTimer === null) flushTimer = setTimeout(flush, FLUSH_MS);
+        cursor = page.nextCursor;
+      } while (cursor);
+
+      if (cancelled) return;
+      if (flushTimer) clearTimeout(flushTimer);
+      flush();
+      setLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+      if (flushTimer) clearTimeout(flushTimer);
+    };
+  }, []);
+
+  const data = useMemo(() => buildData(rows, loading), [loading, rows]);
+
+  return <Tree aria-label="Project files" data={data} height={480} />;
+}
+```
+
+## How do I fetch a folder's children when it opens?
+
+Diff `onExpand`. It hands you the full list of expanded folder ids on every change, so anything new in
+that list is a folder the user just opened.
+
+```tsx
+"use client";
+
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+type ApiRow = { id: string; kind: "file" | "folder"; name: string; parentId: null | string };
+
+const PLACEHOLDER = ":__placeholder__";
+
+export function ExpandToLoadTree() {
+  const [rows, setRows] = useState<ApiRow[]>([
+    { id: "docs", kind: "folder", name: "docs", parentId: null },
+    { id: "src", kind: "folder", name: "src", parentId: null },
+  ]);
+  const requested = useRef(new Set<string>());
+
+  const loadChildren = useCallback(async (folderId: string) => {
+    const children: ApiRow[] = await fetch(
+      `/api/children?parent=${encodeURIComponent(folderId)}`
+    ).then((response) => response.json());
+    setRows((prev) => [...prev, ...children]);
+  }, []);
+
+  const data = useMemo(() => {
+    const next: TreeDefinition = { __root__: { id: "__root__", label: "root", children: [] } };
+    const childIds: Record<string, string[]> = { __root__: [] };
+
+    for (const row of rows) {
+      next[row.id] = { id: row.id, label: row.name, data: { kind: row.kind } };
+      if (row.kind === "folder") childIds[row.id] = [];
+    }
+    for (const row of rows) childIds[row.parentId ?? "__root__"]?.push(row.id);
+
+    for (const [id, ids] of Object.entries(childIds)) {
+      // Every folder keeps at least one child so it stays a folder: without it
+      // there is no expander, and onExpand can never fire for it.
+      if (ids.length === 0) {
+        const placeholderId = `${id}${PLACEHOLDER}`;
+        next[placeholderId] = {
+          id: placeholderId,
+          label: "Loading…",
+          data: { kind: "placeholder" },
+        };
+        ids.push(placeholderId);
+      }
+      next[id].children = ids;
+    }
+
+    return next;
+  }, [rows]);
+
+  return (
+    <Tree
+      aria-label="Project files"
+      data={data}
+      height={480}
+      onExpand={(expandedIds) => {
+        for (const id of expandedIds) {
+          if (id === "__root__" || requested.current.has(id)) continue;
+          requested.current.add(id);
+          void loadChildren(id);
+        }
+      }}
+    />
+  );
+}
+```
+
+This is the closest thing to lazy loading you can build here, and it has one hard requirement: **a
+folder must already have a child to be expandable.** A node with no children is a leaf, gets no
+expander, and `onExpand` will never mention it. Hence the placeholder.
+
+`onExpand` always includes `__root__`, which is why it is skipped explicitly.
+
+## What does a fake row cost you?
+
+Placeholder and loading rows are ordinary nodes, so the engine treats them as ordinary leaves:
+
+- **They are checkable.** Clicking one toggles it, and the row is announced with `aria-checked`.
+- **A cascade includes them.** Checking `src` checks every leaf under it, placeholder included.
+- **They appear in `onCheck`.** The array you receive will contain their ids.
+
+Filter them on the way out, and hide the checkbox so nobody can aim at one:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { CheckedState, Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const PLACEHOLDER = ":__placeholder__";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row", `ui${PLACEHOLDER}`] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+  [`ui${PLACEHOLDER}`]: {
+    id: `ui${PLACEHOLDER}`,
+    label: "Loading…",
+    data: { kind: "placeholder" },
+  },
+};
+
+export function FilteredTree() {
+  const [selection, setSelection] = useState<string[]>([]);
+
+  return (
+    <>
+      <p>{selection.length} files selected</p>
+      <Tree
+        aria-label="Project files"
+        data={data}
+        height={320}
+        // Leave the tree uncontrolled and filter on the way into your own state.
+        // The placeholder may be checked internally; it never reaches `selection`.
+        onCheck={(ids) => setSelection(ids.filter((id) => !id.endsWith(PLACEHOLDER)))}
+        renderCheckbox={({ a11yProps, checkedState, item }) =>
+          item.data?.kind === "placeholder" ? null : (
+            <input
+              {...a11yProps}
+              checked={checkedState === CheckedState.Checked}
+              onChange={() => {
+                /* the row owns the interaction */
+              }}
+              type="checkbox"
+            />
+          )
+        }
+        renderItem={({ item }) =>
+          item.data?.kind === "placeholder" ? (
+            <span style={{ opacity: 0.6 }}>{item.label}</span>
+          ) : (
+            item.label
+          )
+        }
+      />
+    </>
+  );
+}
+```
+
+<Callout type="warn" title="Spread a11yProps onto anything you render">
+`a11yProps` is `{ "aria-hidden": true, tabIndex: -1 }`. The row carries `role="treeitem"` and
+`aria-checked`, so your checkbox and expander must stay out of the tab order and out of the
+accessibility tree. Skip the spread and every row is announced twice.
+</Callout>
+
+If you would rather not have a fake row at all, put the affordance on the folder's own row instead.
+`renderItem` receives `isFolder`, so a folder that has more children to load can carry its own
+"Load more" button — and because the row's click handler toggles expansion, that button must call
+`stopPropagation()`:
+
+```tsx
+"use client";
+
+import { useCallback, useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+type ApiRow = { id: string; kind: "file" | "folder"; name: string; parentId: null | string };
+
+const initialData: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"], data: { hasMore: true } },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function LoadMoreTree() {
+  const [data, setData] = useState<TreeDefinition>(initialData);
+
+  const loadMore = useCallback(async (folderId: string) => {
+    const rows: ApiRow[] = await fetch(
+      `/api/children?parent=${encodeURIComponent(folderId)}`
+    ).then((response) => response.json());
+
+    // A new object every time: `<Tree>` reacts to `data` identity, and
+    // `engine.setData()` keeps selection and expansion for surviving nodes.
+    setData((prev) => {
+      const parent = prev[folderId];
+      const next: TreeDefinition = { ...prev };
+      for (const row of rows) {
+        next[row.id] = { id: row.id, label: row.name, data: { kind: row.kind } };
+      }
+      next[folderId] = {
+        ...parent,
+        children: [...(parent.children ?? []), ...rows.map((row) => row.id)],
+        data: { ...parent.data, hasMore: false },
+      };
+      return next;
+    });
+  }, []);
+
+  return (
+    <Tree
+      aria-label="Project files"
+      data={data}
+      height={320}
+      renderItem={({ isFolder, item }) => (
+        <span>
+          {item.label}
+          {isFolder && item.data?.hasMore ? (
+            <button
+              onClick={(event) => {
+                event.stopPropagation();
+                void loadMore(String(item.id));
+              }}
+              type="button"
+            >
+              Load more
+            </button>
+          ) : null}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+## Do late-arriving children inherit a checked ancestor?
+
+Yes, and this surprises people, so it is worth understanding rather than working around by accident.
+
+Selection is stored as sparse assignments. Checking the folder `src` writes one entry — `src: true` —
+and every leaf under it derives `checked` from that. When a later page adds `src/hooks.ts`, there is
+no assignment on it, so it walks up to `src`, finds `true`, and **arrives checked**.
+
+That is exactly right for "select this whole folder" and exactly wrong for "I picked these four
+files". Which one you have depends on how the user got there, and the engine cannot tell.
+
+If you need the selection pinned to the leaves that existed at the time, flatten it into explicit
+per-leaf assignments once the user is done choosing:
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+
+// One assignment per checked leaf. New siblings arriving later inherit nothing
+// and stay unchecked. Costs a full materialization of the selection, so do it
+// on an explicit action, not on every page.
+function pinSelection(engine: Engine) {
+  engine.setChecked(engine.getAllChecked());
+}
+```
+
+## What this does not give you
+
+Stated plainly, because finding out later is worse:
+
+- **There is no `onLoadChildren` prop.** Nothing in the library initiates a fetch.
+- **There is no async `children` resolver** and no promise-returning node shape.
+- **There is no viewport callback.** No `onRangeChange`, no "you scrolled near the bottom" event. If
+  you want infinite scroll you attach your own `IntersectionObserver` to a sentinel row from inside
+  `renderItem`.
+- **Search only matches what you have loaded.** `searchQuery` filters the current `data` map. A file on
+  page 40 that has not arrived cannot be found, and the tree gives the user no signal that the result
+  set is incomplete. Say so in your UI.
+- **A partial tree makes "select all" a lie.** `Ctrl`/`Cmd`+`A` and `checkAll()` check every leaf
+  currently in `data`. If half the tree is still downloading, half the tree is not selected — although
+  as above, children arriving under a checked ancestor will join the selection as they land.
+
+If your data is genuinely too large to hold in memory, this is the wrong library for the job. The map
+is the model.

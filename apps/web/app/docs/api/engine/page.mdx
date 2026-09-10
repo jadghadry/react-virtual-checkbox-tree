@@ -1,0 +1,340 @@
+export const metadata = {
+  title: "Engine — react-virtual-checkbox-tree",
+  description:
+    "The headless Engine class: constructor options and every public method for structure, visible rows, expansion, selection, search and observers.",
+  alternates: { canonical: "/docs/api/engine" },
+};
+
+# `Engine`
+
+`Engine` is the headless core: tree flattening, the tri-state checkbox math, and search filtering,
+with no React anywhere in it. `<Tree>` is a renderer sitting on top of one; you can drive an `Engine`
+directly from a Node script, a test, a Web Worker, or a renderer you wrote yourself.
+
+It is exported from both entry points:
+
+```ts
+// Pulls in React and @tanstack/react-virtual, and carries a "use client" banner.
+import { Engine } from "react-virtual-checkbox-tree";
+
+// No React, no virtualizer, no "use client" — safe in a Server Component or a Node script.
+import { Engine } from "react-virtual-checkbox-tree/engine";
+```
+
+Prefer the second one whenever you are not rendering `<Tree>` in the same file.
+
+## Anatomy
+
+```ts
+import {
+  CheckedState,
+  Engine,
+  ROOT_ID,
+  type EngineOptions,
+  type TreeDefinition,
+} from "react-virtual-checkbox-tree/engine";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const options: EngineOptions = {
+  initialExpanded: ["src", "ui"],
+  minSearchChars: 3,
+  rootId: ROOT_ID,
+  searchScope: "all",
+};
+
+const engine = new Engine(fileTree, options);
+
+const unsubscribe = engine.subscribe(() => {
+  console.log(engine.getVisibleItems().length, "rows");
+});
+
+engine.toggle("src", true);
+engine.getViewState("ui") === CheckedState.Checked; // true
+engine.getAllChecked().sort(); // ["engine", "row", "tree"] — leaves only
+
+unsubscribe();
+```
+
+## Constructor
+
+```ts
+new Engine(data: TreeDefinition, opts?: EngineOptions)
+```
+
+Building the engine walks every node once: it registers labels, wires children, drops child IDs with
+no entry of their own (with a development warning), computes normalized labels for search, and — in
+development only — asserts the data is acyclic, throwing on a cycle rather than hanging.
+
+That pass is linear in node count: 1.3 ms at 1,110 nodes, 115 ms at 111,110, and about 2 s at
+1.1 million. It is the one genuinely expensive operation in the library, which is why `setData()`
+exists and why `<Tree>` never rebuilds its engine.
+
+### `EngineOptions`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `initialExpanded` | `string[]` | `[]` | Folder IDs expanded on construction. IDs that are not folders are ignored. The root is always expanded regardless. |
+| `minSearchChars` | `number` | `3` | Minimum query length before search activates. Clamped to a minimum of `1`. |
+| `rootId` | `string` | `"__root__"` | ID of the never-rendered root node. Change it only if your data already has a natural root key. |
+| `searchScope` | `SearchScope` | `"all"` | `"all"` matches every label including folders; `"leaves"` matches leaf labels only. |
+
+## Structure
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `setData` | `(data: TreeDefinition) => void` | Replaces the structure **in place**. Selection, expansion and the active query are preserved for nodes that still exist; assignments and expansion for vanished nodes are pruned, and the query is re-run against the new structure. This is what makes passing a new `data` prop safe. |
+| `getLabel` | `(id: string) => string` | The node's label, falling back to the ID when the node is unknown. |
+| `isFolder` | `(id: string) => boolean` | Whether the node has children — and is therefore not directly checkable. |
+| `getNodeCount` | `() => number` | Total nodes, excluding the root. |
+| `getLeafCount` | `() => number` | Total leaf (checkable) nodes. |
+
+## Visible rows
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `getVisibleItems` | `() => VisibleItem[]` | The flattened list of rows to render, honoring expansion and the active search filter. Cached: a selection change returns the **same array identity**, because checking a box moves no rows. Flattening costs 0.3 ms at 1,110 nodes and 25 ms at 111,110 — but only when the shape of the view actually changed. |
+| `indexOf` | `(id: string) => number` | Row index of a node in `getVisibleItems()`, or `-1` when the node is collapsed away, filtered out, or unknown. |
+| `getStructureVersion` | `() => number` | Increments on every change to which rows are visible or in what order. This is the snapshot `<Tree>` feeds to `useSyncExternalStore`. |
+
+Flattening is an iterative depth-first walk, not recursion, so a 10,000-deep chain does not blow the
+call stack.
+
+## Expansion
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `getExpanded` | `() => string[]` | Every expanded folder ID. **Includes the root ID.** |
+| `isExpanded` | `(id: string) => boolean` | Whether that folder is currently open. |
+| `expandAll` | `() => void` | Expands every folder. |
+| `collapseAll` | `() => void` | Collapses every folder except the root, which is structural and stays open. |
+| `toggleExpanded` | `(id: string) => void` | Flips one folder open or closed. No-op on leaves and on the root. |
+| `setExpandedFor` | `(id: string, expanded: boolean) => void` | Sets one folder explicitly. No-op on leaves, on the root, and when the folder is already in that state. |
+| `setExpanded` | `(ids: string[]) => void` | Replaces the whole expanded set. The root is added *before* the equality check, so a controlled consumer echoing back the list it was handed converges instead of oscillating. Emits nothing when the set is unchanged. |
+| `revealNode` | `(id: string) => void` | Expands every **ancestor** of the node so it becomes reachable. Does not expand the node itself, and does not scroll — scrolling is the renderer's job. |
+| `getParent` | `(id: string) => string \| null` | The node's parent, or `null` for the root and for unknown IDs. |
+| `getExpandVersion` | `() => number` | Increments on every expansion change. `<Tree>` diffs it to decide when to fire `onExpand`. |
+
+## Selection
+
+Selection is stored as a sparse map of explicit *assignments*, not as a set of checked IDs. Checking a
+folder of 50,000 leaves writes one entry. A node's state is derived by walking up to the nearest
+ancestor that carries an assignment, then memoized until that branch changes — which is why a cascade
+measures at 1–3 µs whether the tree holds a thousand nodes or a million.
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `toggle` | `(id: string, checked: boolean) => void` | Checks or unchecks a node. Outside search this cascades through the entire subtree in a single write. While search is active it affects only the leaves currently visible — filter to 12 matches, check the parent, clear the filter, and exactly those 12 are checked. No-op for unknown IDs. |
+| `checkAll` | `() => void` | Checks every leaf. One assignment on the root, regardless of tree size. |
+| `uncheckAll` | `() => void` | Clears the entire selection. |
+| `setChecked` | `(input: string[], silent?: boolean) => void` | Replaces the selection with an explicit list of checked **leaf** IDs. Folder IDs and unknown IDs are ignored. Emits nothing when the resulting selection is identical to the current one. `silent` skips the selection-version bump, which is how the `checkedItems` prop syncs a controlled value back in without re-firing `onCheck`. |
+| `getAllChecked` | `() => string[]` | Every checked leaf ID; never a folder ID. Cached until the selection changes. Subtrees with no assignments inside them are skipped wholesale, so a sparse selection costs roughly the size of the result. A *full* selection has to be materialized: about 3.7 ms at 100,000 leaves. |
+| `getCheckedSubtrees` | `() => Array<{ checked: boolean; id: string }>` | The sparse selection itself — the explicit assignments backing the tree. Checking `src` in the example above produces exactly one entry. |
+| `setCheckedSubtrees` | `(entries: Array<{ checked: boolean; id: string }>) => void` | Restores a selection captured with `getCheckedSubtrees()`. Entries whose ID is absent from the current data are dropped. |
+| `getViewState` | `(id: string) => CheckedState` | The state to *render*. While search is active, a folder summarizes only its **visible** children — a folder showing 2 of its 800 files reads as checked when both visible ones are checked, because that is what the user is looking at. |
+| `getState` | `(id: string) => CheckedState` | The state against the **full** tree, ignoring any search filter. Outside search this is identical to `getViewState`. |
+| `getSelectionVersion` | `() => number` | Increments on every selection change. |
+
+<Callout type="note" title="getViewState and getState disagree on purpose">
+Filter to `readme`, check `docs`, and `getViewState("docs")` is `"checked"` while
+`getState("docs")` is `"indeterminate"` — `guide.md` was hidden and was left alone. Render
+`getViewState`; persist and report on `getState` and `getAllChecked`.
+</Callout>
+
+## Search
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `setSearchQuery` | `(query: string) => void` | Filters to nodes matching the query and their ancestors. Matching is case- and diacritic-insensitive: `resume` matches `Résumé.pdf`. Activating search snapshots the current expansion and auto-expands every revealed branch; clearing the query **restores** the snapshot, so a user who had ten folders open and typed three characters gets those ten folders back. |
+| `getSearchQuery` | `() => string` | The raw query as last set, whether or not it is long enough to be active. |
+| `isSearchActive` | `() => boolean` | Whether the query is at least `minSearchChars` long and the filter is applied. |
+| `getMatchCount` | `() => number` | How many nodes matched. `0` when search is inactive. Counts matching nodes, not the rows on screen — ancestors dragged into view are not matches, and a matching folder's descendants are not either. |
+| `setMinSearchChars` | `(n: number) => void` | Changes the activation threshold and re-applies the current query immediately. Clamped to a minimum of `1`. |
+| `setSearchScope` | `(scope: SearchScope) => void` | Switches between `"all"` and `"leaves"` and re-applies the current query. |
+
+A matching folder is not auto-expanded — its subtree is reachable, but expanding a folder with 50,000
+descendants would defeat the point of filtering. It does carry its whole subtree into the filtered
+view, so checking it selects everything under it; it all matched.
+
+A keystroke costs 142 µs at 1,110 nodes, 957 µs at 11,110, and 11.5 ms at 111,110. Past roughly
+100,000 nodes, debounce the input.
+
+## Observers
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `subscribe` | `(cb: () => void) => () => void` | Subscribes to any state change. Returns an unsubscribe function. The callback takes no arguments — read whichever version counter you care about (`getStructureVersion`, `getExpandVersion`, `getSelectionVersion`) to find out what moved. |
+
+The three version counters exist so a renderer can be selective. A selection change bumps
+`selectionVersion` and deliberately leaves `structureVersion` alone, which is how the flattened row
+list survives every click.
+
+## Driving it with no React at all
+
+A complete script. It runs under `node --experimental-strip-types`, in a test, or in a Server
+Component — nothing here touches the DOM.
+
+```ts
+import {
+  CheckedState,
+  Engine,
+  type TreeDefinition,
+} from "react-virtual-checkbox-tree/engine";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree, { initialExpanded: ["src", "ui"] });
+
+const GLYPH = {
+  [CheckedState.Checked]: "[x]",
+  [CheckedState.Indeterminate]: "[-]",
+  [CheckedState.Unchecked]: "[ ]",
+};
+
+function print() {
+  for (const row of engine.getVisibleItems()) {
+    const indent = "  ".repeat(row.level);
+    const arrow = row.isFolder ? (row.isExpanded ? "v " : "> ") : "  ";
+    console.log(`${indent}${arrow}${GLYPH[engine.getViewState(row.id)]} ${engine.getLabel(row.id)}`);
+  }
+  console.log("---");
+}
+
+// Re-render on every change, exactly like a UI would.
+engine.subscribe(print);
+
+engine.toggle("ui", true);
+// > [ ] docs
+// v [-] src
+//     [ ] engine.ts
+//   v [x] ui
+//       [x] tree.tsx
+//       [x] row.tsx
+// ---
+
+console.log(engine.getAllChecked().sort()); // ["row", "tree"]
+console.log(engine.getState("src")); // "indeterminate"
+console.log(engine.getNodeCount(), engine.getLeafCount()); // 8 5
+
+engine.setSearchQuery("tree");
+console.log(engine.getMatchCount()); // 1
+console.log(engine.getVisibleItems().map((row) => row.id)); // ["src", "ui", "tree"]
+
+engine.setSearchQuery("");
+console.log(engine.isSearchActive()); // false
+```
+
+## Persisting a selection without materializing it
+
+`getAllChecked()` returns every checked leaf, which is the right shape for a form submission and the
+wrong shape for storage once the tree is large: 50,000 IDs in `localStorage` for one click.
+`getCheckedSubtrees()` returns the assignments instead — usually a handful of entries — and
+`setCheckedSubtrees()` restores them exactly.
+
+```ts
+import { Engine, type TreeDefinition } from "react-virtual-checkbox-tree/engine";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(fileTree);
+engine.toggle("src", true);
+engine.toggle("engine", false);
+
+// Two entries describe a selection that getAllChecked() spells out as a list.
+const sparse = engine.getCheckedSubtrees();
+// [{ checked: true, id: "src" }, { checked: false, id: "engine" }]
+localStorage.setItem("selection", JSON.stringify(sparse));
+
+// Later, in another session:
+const restored = new Engine(fileTree);
+restored.setCheckedSubtrees(JSON.parse(localStorage.getItem("selection") ?? "[]"));
+restored.getAllChecked().sort(); // ["row", "tree"]
+```
+
+Entries referencing nodes that no longer exist are dropped on restore, so a stale blob degrades to a
+smaller selection rather than throwing.
+
+## Reaching the engine from `<Tree>`
+
+`<Tree>` owns its engine. Get at it with the ref rather than constructing a second one — two engines
+over the same data will not stay in sync.
+
+```tsx
+import { useEffect, useRef, useState } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function WithLiveCount() {
+  const treeRef = useRef<TreeRef>(null);
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const engine = treeRef.current?.getEngine();
+    if (!engine) return;
+    // subscribe() returns its own unsubscribe function.
+    return engine.subscribe(() => setCount(engine.getAllChecked().length));
+  }, []);
+
+  return (
+    <>
+      <p>{count} files selected</p>
+      <Tree aria-label="Project files" data={fileTree} height={320} ref={treeRef} />
+    </>
+  );
+}
+```
+
+## Known costs
+
+Honest numbers, median of 5 runs on Node 26 / Apple Silicon:
+
+| Nodes | Build engine | Flatten rows | Cascade a check | Read selection | Search keystroke |
+| --- | --- | --- | --- | --- | --- |
+| 1,110 | 1.3 ms | 0.3 ms | 3 µs | 53 µs | 142 µs |
+| 11,110 | 9.6 ms | 2.2 ms | 1 µs | 320 µs | 957 µs |
+| 111,110 | 115 ms | 25 ms | 1 µs | 3.7 ms | 11.5 ms |
+| 1,111,110 | 1,955 ms | 684 ms | 1 µs | 75.8 ms | 169 ms |
+
+Two of these columns grow with the tree and cannot be avoided: constructing an engine is linear in
+node count, and `getAllChecked()` has to materialize the full list. Everything else is flat.

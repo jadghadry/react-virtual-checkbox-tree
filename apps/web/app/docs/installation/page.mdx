@@ -1,0 +1,382 @@
+export const metadata = {
+  title: "Installation — react-virtual-checkbox-tree",
+  description:
+    "Install react-virtual-checkbox-tree: peer dependencies, both entry points, framework notes for Next.js, Vite, Remix and Astro, and bundle sizes.",
+  alternates: { canonical: "/docs/installation" },
+};
+
+# Installation
+
+One command, one runtime dependency, no stylesheet to import.
+
+```bash
+npm install react-virtual-checkbox-tree
+```
+
+```bash
+pnpm add react-virtual-checkbox-tree
+```
+
+```bash
+yarn add react-virtual-checkbox-tree
+```
+
+There is no CSS file to import. The library ships zero stylesheets — rows carry data attributes and
+you write the styles. Nothing breaks if you never write any; the tree renders with a native
+`<input type="checkbox">` and a `+`/`−` text expander until you replace them.
+
+## What gets installed
+
+| Kind | Package | Range |
+| --- | --- | --- |
+| Peer dependency | `react` | `^18.0.0 \|\| ^19.0.0` |
+| Peer dependency | `react-dom` | `^18.0.0 \|\| ^19.0.0` |
+| Runtime dependency | `@tanstack/react-virtual` | `^3.0.0` |
+
+`react` and `react-dom` are peers: you already have them, and the library will use whichever copy
+your app has. `@tanstack/react-virtual` is the only thing installed on your behalf, and it is the
+only thing installed on your behalf — there is no second tree library, no icon pack, no CSS-in-JS
+runtime hiding behind it.
+
+The package requires Node 18 or newer to build and run tooling against. It is `"type": "module"` and
+ships both ESM and CommonJS builds.
+
+## Which entry point should I import from?
+
+There are two, and the difference is React.
+
+| Entry point | Exports | Imports React | `"use client"` banner |
+| --- | --- | --- | --- |
+| `react-virtual-checkbox-tree` | `Tree`, `Engine`, `CheckedState`, `ROOT_ID`, `DEFAULT_ROW_HEIGHT`, all types | yes | yes |
+| `react-virtual-checkbox-tree/engine` | `Engine`, `CheckedState`, `ROOT_ID`, `DEFAULT_ROW_HEIGHT`, types | no | no |
+
+React itself is never bundled into either entry — `react`, `react-dom` and `@tanstack/react-virtual`
+are all external in the build. The middle column is about which entry point *imports* React, and so
+which one can run in a plain Node process.
+
+Import from the main entry when you are rendering a tree:
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+```
+
+Import from `/engine` when you want the checkbox math without a renderer — a server-side validation
+pass, a Node script that expands a saved selection into leaf IDs, a unit test, or a React Server
+Component that only needs to count things:
+
+```ts
+import { Engine } from "react-virtual-checkbox-tree/engine";
+
+const engine = new Engine({
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+});
+
+engine.toggle("docs", true);
+console.log(engine.getAllChecked().sort()); // [ 'guide', 'readme' ]
+```
+
+The `/engine` entry pulls in neither React nor `@tanstack/react-virtual`. Use it anywhere a DOM does
+not exist.
+
+<Callout type="tip" title="Both entries export the same Engine">
+`Engine` from the main entry and `Engine` from `/engine` are the same class. Importing it from
+`/engine` in server code just keeps the virtualizer and the renderer out of that bundle.
+</Callout>
+
+## Does it work in a Next.js App Router server file?
+
+Yes. The main entry ships a `"use client"` banner at the top of its build output, so you can import
+`Tree` directly into a server component file and render it without adding a directive of your own:
+
+```tsx
+// app/page.tsx — a server component, no "use client" needed here
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function Page() {
+  return <Tree aria-label="Project files" data={data} height={320} />;
+}
+```
+
+The moment you need a `searchQuery` state or an `onCheck` handler, that page has to become a client
+component — not because of this library, but because those are hooks and event handlers. Put the
+interactive part in its own `"use client"` file and keep the page a server component.
+
+## Framework notes
+
+### Next.js (App Router)
+
+Works with no configuration. Import `Tree` anywhere; the `"use client"` banner is already in the
+build. For server-side work — validating a submitted selection, precomputing counts — import
+`Engine` from `react-virtual-checkbox-tree/engine` so the virtualizer never reaches the server
+bundle.
+
+### Next.js (Pages Router)
+
+Works with no configuration. The `"use client"` directive is inert in the Pages Router; it is
+ignored, not an error. Rows appear after hydration — see the SSR note in Troubleshooting.
+
+### Vite
+
+Works with no configuration. If you are on Vite 4 or older with an unusual `resolve.conditions`
+setup, the `exports` map still resolves through the `import` condition; nothing special is needed.
+
+### Remix / React Router (framework mode)
+
+Works with no configuration. Both entries are ESM-first with a CommonJS fallback, so neither
+`serverDependenciesToBundle` nor `ssr.noExternal` entries are required. Server rendering produces
+the scroll container with no rows inside it; the virtualizer fills it on the client.
+
+### Astro
+
+Wrap the tree in a React island and give that island a client directive, because the tree is a React
+component with state. Write the island as an ordinary `.tsx` file:
+
+```tsx
+// src/components/FileTree.tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export function FileTree() {
+  return <Tree aria-label="Project files" data={data} height={320} />;
+}
+```
+
+Then render it from a `.astro` page as `FileTree client:load` (in the usual angle-bracket island
+syntax). `client:visible` works too and is usually the better choice for a tree below the fold, and
+`client:only="react"` skips the empty-container server pass entirely.
+
+## Do I need to install types?
+
+No. TypeScript declarations ship inside the package. There is no `@types/react-virtual-checkbox-tree`
+package, and if you find one it is not ours.
+
+```ts
+import type {
+  SearchScope,
+  TreeDefinition,
+  TreeItem,
+  TreeProps,
+  TreeRef,
+  VisibleItem,
+} from "react-virtual-checkbox-tree";
+```
+
+`CheckedState` is an enum, not a type, so import it as a value:
+
+```ts
+import { CheckedState } from "react-virtual-checkbox-tree";
+
+CheckedState.Checked; // "checked"
+CheckedState.Indeterminate; // "indeterminate"
+CheckedState.Unchecked; // "unchecked"
+```
+
+Both entry points resolve correctly under `node10`, `node16` and `bundler` module resolution, in ESM
+and in CommonJS. CI runs `publint` and `@arethetypeswrong/cli` against the packed tarball on every
+commit and again before every publish, so `require("react-virtual-checkbox-tree")` works and gets the
+right `.d.cts` alongside it:
+
+```js
+const { Engine } = require("react-virtual-checkbox-tree/engine");
+
+const engine = new Engine({
+  __root__: { id: "__root__", label: "root", children: ["docs"] },
+  docs: { id: "docs", label: "docs", children: ["readme"] },
+  readme: { id: "readme", label: "README.md" },
+});
+
+console.log(engine.getLeafCount()); // 1
+```
+
+## Verifying your install works
+
+Paste this into a fresh file and run it with `node verify.mjs`. It uses only the `/engine` entry, so
+it needs no DOM, no bundler and no React:
+
+```js
+// verify.mjs
+import { Engine } from "react-virtual-checkbox-tree/engine";
+
+const data = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(data);
+
+console.log(engine.getNodeCount()); // 8
+console.log(engine.getLeafCount()); // 5
+
+engine.expandAll();
+console.log(engine.getVisibleItems().length); // 8
+
+engine.toggle("docs", true);
+console.log(engine.getAllChecked().sort()); // [ 'guide', 'readme' ]
+console.log(engine.getViewState("docs")); // 'checked'
+
+engine.toggle("readme", false);
+console.log(engine.getViewState("docs")); // 'indeterminate'
+```
+
+Eight nodes, five leaves, and a folder that goes indeterminate when one of its two children is turned
+off: if that prints, the package resolved, the types resolved, and the tri-state math is running.
+
+For the React side, the [Quick start](/docs/quick-start) is a single file you can paste into a route
+and see on screen.
+
+## How big is it?
+
+Measured on the built output, minified and gzipped:
+
+| What you import | Gzipped |
+| --- | --- |
+| `react-virtual-checkbox-tree` (the library's own code) | 5.6 kB |
+| `react-virtual-checkbox-tree/engine` | 3.1 kB |
+| Main entry plus `@tanstack/react-virtual` | 12.6 kB |
+
+The third row is the honest number for "what a page that renders a tree actually downloads", assuming
+you are not already shipping `@tanstack/react-virtual` for something else. React itself is not counted
+in any of these — it is a peer dependency you already have.
+
+## Troubleshooting
+
+### The tree renders but no rows appear
+
+The scroll container has no height. `height` defaults to `"100%"`, which resolves to zero pixels when
+the parent element has no height of its own — the virtualizer then decides that zero rows are in
+view, correctly.
+
+Give the tree an explicit height:
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  return <Tree aria-label="Project files" data={data} height={320} />;
+}
+```
+
+Or give the parent a real height and keep `height="100%"`:
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+export default function FileTree() {
+  return (
+    <div style={{ height: "60vh" }}>
+      <Tree aria-label="Project files" data={data} height="100%" />
+    </div>
+  );
+}
+```
+
+This is the single most common install-day problem. If you see `role="tree"` in the DOM inspector
+with an empty div inside it, this is why.
+
+### Nothing renders on the server, and hydration looks empty
+
+That is expected. `@tanstack/react-virtual` measures the scroll element to decide which rows are in
+view, and there is no scroll element during server rendering — so the server HTML contains the
+`role="tree"` container and its sizing wrapper, and no rows. The rows appear on the first client
+render.
+
+Consequences worth knowing:
+
+- Row content is not in the server HTML, so it is not crawled and not visible before hydration.
+- There is no hydration mismatch warning, because the server and the first client pass agree on the
+  empty container; rows arrive in the effect that follows.
+- If you need the row text server-rendered for SEO, render a separate plain list for crawlers, or use
+  `Engine` from `/engine` to emit that list. The tree itself will not do it for you.
+
+### A row I expect is missing, and there is a console warning
+
+In development the engine warns when `children` references an ID that has no entry of its own, and
+skips it rather than rendering an undefined row. Every ID listed in a `children` array must also exist
+as a key in the same map.
+
+### "Cycle detected in tree data"
+
+The engine throws on cyclic `children` in development rather than hanging a traversal. A node cannot
+be its own ancestor. If you built the map from an API response with parent pointers, check for a node
+whose parent chain loops back to itself.
+
+### A node appears under only one of its two parents
+
+That is by design and it warns in development. This is a tree, not a graph: when a node ID is listed
+as a child of two different parents, the last parent seen wins. Duplicate the node under two distinct
+IDs instead.
+
+### Importing `Tree` fails in a server component
+
+Check that you are importing from `react-virtual-checkbox-tree` and not from a deep path into `dist`.
+The `"use client"` banner is on the main entry's build output; a deep import bypasses it — and deep
+imports are not part of the public API. Only `react-virtual-checkbox-tree`,
+`react-virtual-checkbox-tree/engine` and `react-virtual-checkbox-tree/package.json` are exported.
+
+## Next
+
+- [Quick start](/docs/quick-start) — a complete working tree in one file
+- [Data model](/docs/data-model) — what `TreeDefinition` expects and why the map is flat
+- [Checkbox semantics](/docs/checkbox-semantics) — tri-state, leaf-only checking, sparse cascades

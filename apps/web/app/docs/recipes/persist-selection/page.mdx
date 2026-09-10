@@ -1,0 +1,380 @@
+export const metadata = {
+  title: "Persist a selection — react-virtual-checkbox-tree",
+  description:
+    "Save and restore a tree selection with getCheckedSubtrees and setCheckedSubtrees, to localStorage or a server, without storing every checked leaf id.",
+  alternates: { canonical: "/docs/recipes/persist-selection" },
+};
+
+# Persist a selection
+
+Persist `engine.getCheckedSubtrees()`, not the array `onCheck` hands you. The first is the list of
+decisions the user made; the second is the list of every leaf those decisions imply, and at 100,000
+leaves that is a 100,000-string array you are writing to storage on every click.
+
+For a tree of a few thousand leaves, the plain array is fine and simpler — [skip to the end](#when-is-the-plain-array-fine).
+
+## Why is a list of checked leaves a problem?
+
+Because it grows with the tree instead of with the interaction. One click on the root of a
+111,110-node tree produces:
+
+| What you store | Entries | Cost to produce |
+| --- | --- | --- |
+| `onCheck` array (every checked leaf) | one per checked leaf | 3.7 ms at 111,110 nodes, 75.8 ms at 1,111,110 |
+| `getCheckedSubtrees()` (the decisions) | one | constant |
+
+Those milliseconds are measured with `npm run bench` on Node 26 / Apple Silicon; see
+[Performance](/docs/performance) for the full table. They are the cost of `getAllChecked()`, which is
+what materializes the leaf list.
+
+Internally, selection is stored as a sparse map of explicit *assignments*. Checking a folder of
+50,000 leaves writes exactly one entry, and every node's state is derived by walking up to the nearest
+ancestor that has an assignment. `getCheckedSubtrees()` hands you that map directly.
+
+## What does the sparse form look like?
+
+An array of `{ checked: boolean; id: string }`. Using the file tree from the rest of these docs:
+
+```ts
+import { Engine, type TreeDefinition } from "react-virtual-checkbox-tree/engine";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const engine = new Engine(data);
+
+engine.toggle("src", true);
+engine.getCheckedSubtrees(); // [{ checked: true, id: "src" }]
+engine.getAllChecked().sort(); // ["engine", "row", "tree"]
+
+// "everything under src except engine.ts" is two decisions, not two leaves.
+engine.toggle("engine", false);
+engine.getCheckedSubtrees(); // [{ checked: true, id: "src" }, { checked: false, id: "engine" }]
+engine.getAllChecked().sort(); // ["row", "tree"]
+```
+
+Note the `checked: false` entry. Unchecking one file inside a checked folder is stored as an
+exception, which is why the shape has a boolean and is not just a list of ids.
+
+Entries are order-independent: a node's state comes from its *nearest* ancestor assignment, so a
+descendant entry always wins over an ancestor entry regardless of where either sits in the array.
+
+## How do I save it to localStorage?
+
+Read and write through the engine, via `ref.getEngine()`. Restore first, then subscribe.
+
+```tsx
+"use client";
+
+import { useEffect, useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const STORAGE_KEY = "file-tree-selection.v1";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+type SparseSelection = Array<{ checked: boolean; id: string }>;
+
+/** Never trust what came out of storage — it was written by an older build. */
+function parseSelection(raw: null | string): SparseSelection {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is SparseSelection[number] =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as { id?: unknown }).id === "string" &&
+        typeof (entry as { checked?: unknown }).checked === "boolean"
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function PersistedTree() {
+  const treeRef = useRef<TreeRef>(null);
+
+  useEffect(() => {
+    const engine = treeRef.current?.getEngine();
+    if (!engine) return;
+
+    // 1. Restore. IDs that are not in `data` are dropped for you.
+    engine.setCheckedSubtrees(parseSelection(window.localStorage.getItem(STORAGE_KEY)));
+
+    // 2. Then start watching, so the restore itself does not trigger a write.
+    let version = engine.getSelectionVersion();
+    let timer: null | ReturnType<typeof setTimeout> = null;
+
+    const unsubscribe = engine.subscribe(() => {
+      const next = engine.getSelectionVersion();
+      if (next === version) return; // an expand or a search, not a selection change
+      version = next;
+
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(engine.getCheckedSubtrees()));
+      }, 200);
+    });
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
+
+  return <Tree aria-label="Project files" data={data} height={320} ref={treeRef} />;
+}
+```
+
+Three things about that effect are deliberate:
+
+- **It subscribes to the engine instead of using `onCheck`.** Passing an `onCheck` prop makes the tree
+  call `getAllChecked()` on every selection change — the exact array you were trying not to build.
+  Omitting the prop skips that work entirely.
+- **It filters on `getSelectionVersion()`.** `subscribe` fires for expansion and search changes too;
+  the version counters are how you tell them apart. There is also `getExpandVersion()` and
+  `getStructureVersion()`.
+- **It restores before capturing the version.** `setCheckedSubtrees` bumps the selection version, so
+  reading it afterwards stops the restore from immediately writing itself back.
+
+`treeRef.current` is populated by the time a passive effect runs, so the empty dependency array is
+safe.
+
+## How do I save it to a server?
+
+Same shape, different sink. Debounce, and abort the in-flight request when a newer one starts.
+
+```tsx
+"use client";
+
+import { useEffect, useRef } from "react";
+import { Tree, type TreeDefinition, type TreeRef } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+type SparseSelection = Array<{ checked: boolean; id: string }>;
+
+export function SyncedTree({ initial }: { initial: SparseSelection }) {
+  const treeRef = useRef<TreeRef>(null);
+
+  useEffect(() => {
+    const engine = treeRef.current?.getEngine();
+    if (!engine) return;
+
+    engine.setCheckedSubtrees(initial);
+
+    let version = engine.getSelectionVersion();
+    let timer: null | ReturnType<typeof setTimeout> = null;
+    let inFlight: AbortController | null = null;
+
+    const unsubscribe = engine.subscribe(() => {
+      const next = engine.getSelectionVersion();
+      if (next === version) return;
+      version = next;
+
+      const payload = JSON.stringify({ selection: engine.getCheckedSubtrees() });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        inFlight?.abort();
+        inFlight = new AbortController();
+        void fetch("/api/selection", {
+          body: payload,
+          headers: { "content-type": "application/json" },
+          method: "PUT",
+          signal: inFlight.signal,
+        }).catch(() => {
+          /* a superseded save is not an error worth surfacing */
+        });
+      }, 500);
+    });
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      inFlight?.abort();
+      unsubscribe();
+    };
+  }, [initial]);
+
+  return <Tree aria-label="Project files" data={data} height={320} ref={treeRef} />;
+}
+```
+
+On the server, expand the sparse form back into leaf ids with the React-free entry point. It has no
+`"use client"` banner and pulls in neither React nor the virtualizer:
+
+```ts
+import { Engine, type TreeDefinition } from "react-virtual-checkbox-tree/engine";
+
+type SparseSelection = Array<{ checked: boolean; id: string }>;
+
+export function expandSelection(data: TreeDefinition, selection: SparseSelection): string[] {
+  const engine = new Engine(data);
+  engine.setCheckedSubtrees(selection);
+  return engine.getAllChecked();
+}
+```
+
+Building the engine is linear in node count — roughly 115 ms at 111,110 nodes and 2 s at 1,111,110 —
+so do this once per request at most, and cache the `Engine` if the same `data` serves many requests.
+
+## Do I need to validate ids on restore?
+
+Partly. `setCheckedSubtrees` already drops every id that does not exist in the current `data`, so a
+node deleted since the save is handled. What it cannot catch:
+
+- **An id that still exists but moved.** It is restored against its new parent, which may be a very
+  different subtree.
+- **An id that was a leaf and is now a folder.** The stored `checked: true` becomes a cascade over
+  everything under it.
+- **Anything that is not your data at all.** `localStorage` is user-writable and a stored blob outlives
+  your schema, so parse defensively — the `parseSelection` above is the minimum.
+
+The cheap defense is a version in the storage key (`"file-tree-selection.v1"`) or alongside the
+payload, bumped whenever the meaning of an id changes. Restoring a selection you cannot vouch for is
+worse than restoring nothing.
+
+Also worth knowing: **`setCheckedSubtrees` fires `onCheck`.** It bumps the selection version, so a
+tree that also has an `onCheck` prop will see a change event during restore. The controlled
+`checkedItems` prop is the opposite — it applies silently and does not re-fire `onCheck`.
+
+## Should I persist expansion too?
+
+Yes, and here the plain array is the right answer: the expanded set is one entry per open folder,
+which is bounded by what a person can open by hand.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const KEY = "file-tree-expanded.v1";
+
+export function ExpansionMemory() {
+  const [expanded, setExpanded] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const parsed: unknown = JSON.parse(window.localStorage.getItem(KEY) ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+
+  return (
+    <Tree
+      aria-label="Project files"
+      data={data}
+      expandedItems={expanded}
+      height={320}
+      onExpand={(ids) => {
+        setExpanded(ids);
+        window.localStorage.setItem(KEY, JSON.stringify(ids));
+      }}
+    />
+  );
+}
+```
+
+`onExpand` includes `__root__` in its list. Handing that back through `expandedItems` is safe — the
+root is re-added before the equality check, so a controlled consumer echoing the value it was given
+settles in one pass instead of looping.
+
+Note that the initial state reads `localStorage` during render, which is fine in a client component
+that only ever mounts in the browser. If yours is server-rendered, move the read into an effect to
+avoid a hydration mismatch.
+
+## When is the plain array fine?
+
+When the number of checked leaves is bounded by something small — a permissions matrix, a category
+filter, a settings panel. If a full selection is a few hundred ids, the sparse form buys you nothing
+and costs you a concept.
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const data: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+
+const KEY = "file-tree-checked.v1";
+
+export function SimplePersistedTree() {
+  const [checked, setChecked] = useState<string[]>([]);
+
+  return (
+    <Tree
+      aria-label="Project files"
+      checkedItems={checked}
+      data={data}
+      height={320}
+      onCheck={(ids) => {
+        setChecked(ids);
+        window.localStorage.setItem(KEY, JSON.stringify(ids));
+      }}
+    />
+  );
+}
+```
+
+Restoring is `checkedItems={JSON.parse(stored)}`. Folder ids and unknown ids in that array are
+ignored, so a stale entry is harmless rather than corrupting.
+
+<Callout type="tip" title="A rough dividing line">
+Under about 10,000 leaves, use `checkedItems` and `onCheck`. Above that, or any time a single click
+can select the whole tree, use `getCheckedSubtrees()`.
+</Callout>

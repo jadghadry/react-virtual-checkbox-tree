@@ -1,0 +1,438 @@
+export const metadata = {
+  title: "Types — react-virtual-checkbox-tree",
+  description:
+    "Every exported type: TreeDefinition, TreeItem, VisibleItem, SearchScope, CheckedState, TreeProps, TreeRef, the render prop objects and EngineOptions.",
+  alternates: { canonical: "/docs/api/types" },
+};
+
+# Types
+
+Every type below is exported and shipped as `.d.ts`. Declarations on this page are copied from the
+source, so what you read here is what your editor will show you.
+
+## What each entry point exports
+
+```ts
+// react-virtual-checkbox-tree
+export { CheckedState, DEFAULT_ROW_HEIGHT, ROOT_ID } from "./constants";
+export { Engine, type EngineOptions } from "./engine";
+export {
+  Tree,
+  type TreeCheckboxRenderProps,
+  type TreeExpanderRenderProps,
+  type TreeItemRenderProps,
+  type TreeProps,
+  type TreeRef,
+} from "./tree";
+export type { SearchScope, TreeDefinition, TreeItem, VisibleItem } from "./types";
+```
+
+```ts
+// react-virtual-checkbox-tree/engine — no React, no virtualizer, no "use client"
+export { CheckedState, DEFAULT_ROW_HEIGHT, ROOT_ID } from "./constants";
+export { Engine, type EngineOptions } from "./engine";
+export type { SearchScope, TreeDefinition, TreeItem, VisibleItem } from "./types";
+```
+
+The `/engine` entry point drops exactly the React surface: the `Tree` component, `TreeProps`,
+`TreeRef`, and the three render prop types. Everything else is identical, so shared code can import
+from `/engine` and stay server-safe.
+
+## `TreeItem`
+
+A single node. Nodes are stored flat rather than nested: lookups stay O(1), IDs stay stable across
+updates, and you can build a tree straight from a SQL result without recursion.
+
+```ts
+export type TreeItem = {
+  children?: string[];
+  data?: Record<string, unknown>;
+  id: number | string;
+  label: string;
+};
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `number \| string` | Yes | Stable identifier. Should match the key this item is stored under in the `TreeDefinition` map — the map key is what the engine actually uses. |
+| `label` | `string` | Yes | Text shown by the default row renderer, and the string search matches against. |
+| `children` | `string[]` | No | IDs of this node's children, in render order. Omit it, or pass an empty array, to make the node a **leaf**. A node with one or more children is a **folder** and cannot hold its own checked state. |
+| `data` | `Record<string, unknown>` | No | Arbitrary metadata passed through to your renderers untouched. Icons, file sizes, permission levels, avatar URLs — anything `renderItem` needs. |
+
+Child IDs with no entry of their own are dropped at build time, with a console warning in
+development. A dangling reference renders nothing rather than crashing the tree.
+
+## `TreeDefinition`
+
+The whole tree, as a flat map.
+
+```ts
+export type TreeDefinition = Record<string, TreeItem>;
+```
+
+The map must contain a root entry — `"__root__"` unless you passed `rootId` to the `Engine` — whose
+`children` are your top-level rows. The root itself is never rendered, is always expanded, and is
+excluded from `getNodeCount()`.
+
+```ts
+import type { TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs", "src"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+  src: { id: "src", label: "src", children: ["engine", "ui"] },
+  engine: { id: "engine", label: "engine.ts" },
+  ui: { id: "ui", label: "ui", children: ["tree", "row"] },
+  tree: { id: "tree", label: "tree.tsx" },
+  row: { id: "row", label: "row.tsx" },
+};
+```
+
+That tree has 8 nodes and 5 leaves. `README.md`, `guide.md`, `engine.ts`, `tree.tsx` and `row.tsx`
+are the only IDs that can ever appear in `onCheck`.
+
+<Callout type="warn" title="Trees, not graphs">
+Listing the same ID as a child of two parents is not supported. The last parent seen wins, the
+node's checked state follows that branch, and development builds warn. Duplicate the node under two
+distinct IDs instead. A cycle throws at construction in development rather than hanging.
+</Callout>
+
+## `VisibleItem`
+
+One row in the flattened, currently-visible view. Returned by `Engine.getVisibleItems()`; collapsed
+subtrees and search-filtered branches are absent.
+
+```ts
+export type VisibleItem = {
+  id: string;
+  isExpanded: boolean;
+  isFolder: boolean;
+  level: number;
+  posInSet: number;
+  setSize: number;
+};
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Node ID. Look the label up with `engine.getLabel(id)` or the item up in your own `data`. |
+| `isExpanded` | `boolean` | Whether this folder is open. Always `false` for leaves. |
+| `isFolder` | `boolean` | Whether the node has children **in the current view** — under an active search filter, a folder whose children were all filtered out reports `false`. |
+| `level` | `number` | Depth below the root. Top-level rows are `0`; `aria-level` is this plus one. |
+| `posInSet` | `number` | 1-based index among visible siblings. Becomes `aria-posinset`. |
+| `setSize` | `number` | Number of visible siblings at this level. Becomes `aria-setsize`. |
+
+Virtualization flattens the DOM, so there are no `role="group"` wrappers for a screen reader to infer
+nesting from. `posInSet` and `setSize` are how the tree stays navigable anyway.
+
+## `SearchScope`
+
+```ts
+export type SearchScope = "all" | "leaves";
+```
+
+| Value | Meaning |
+| --- | --- |
+| `"all"` | Default. Matches every node's label, folders included. A matching folder carries its entire subtree into the filtered view, so checking it selects everything under it. |
+| `"leaves"` | Matches leaf labels only. Folders appear because they *contain* a match, never because they *are* one. Searching `docs` against the tree above yields zero matches under this scope. |
+
+## `CheckedState`
+
+A string enum, so the values are usable as CSS attribute selectors and as JSON.
+
+```ts
+export enum CheckedState {
+  Checked = "checked",
+  Indeterminate = "indeterminate",
+  Unchecked = "unchecked",
+}
+```
+
+| Member | Value | When |
+| --- | --- | --- |
+| `CheckedState.Checked` | `"checked"` | A leaf that is checked, or a folder whose every child is checked. |
+| `CheckedState.Indeterminate` | `"indeterminate"` | A folder with some but not all descendants checked. Leaves are never indeterminate. |
+| `CheckedState.Unchecked` | `"unchecked"` | Everything else. |
+
+The value is what lands in each row's `data-state` attribute, and it maps onto `aria-checked` as
+`"true"` / `"mixed"` / `"false"`.
+
+```ts
+import {
+  CheckedState,
+  Engine,
+  type TreeDefinition,
+} from "react-virtual-checkbox-tree/engine";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["docs"] },
+  docs: { id: "docs", label: "docs", children: ["readme", "guide"] },
+  readme: { id: "readme", label: "README.md" },
+  guide: { id: "guide", label: "guide.md" },
+};
+
+const engine = new Engine(fileTree);
+engine.toggle("readme", true);
+
+// Comparing against the string works too — this is a string enum.
+engine.getViewState("docs") === CheckedState.Indeterminate; // true
+engine.getViewState("docs") === "indeterminate"; // true
+```
+
+## Constants
+
+```ts
+export const ROOT_ID = "__root__";
+export const DEFAULT_ROW_HEIGHT = 32;
+```
+
+`ROOT_ID` is the default `rootId` for the `Engine`. `DEFAULT_ROW_HEIGHT` is the default
+`estimateSize` for `<Tree>`.
+
+## `TreeProps`
+
+The full prop surface of `<Tree>`, verbatim. Every field except `data` is optional. Prose for each
+one is on the [`<Tree>` reference](/docs/api/tree).
+
+```ts
+export type TreeProps = {
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  checkedItems?: null | string[];
+  className?: string;
+  data: TreeDefinition;
+  estimateSize?: ((index: number) => number) | number;
+  expandedItems?: null | string[];
+  height?: number | string;
+  indent?: number;
+  minSearchChars?: number;
+  onCheck?: (checkedLeafIds: string[]) => void;
+  onExpand?: (expandedFolderIds: string[]) => void;
+  overscan?: number;
+  renderCheckbox?: (props: TreeCheckboxRenderProps) => ReactNode;
+  renderExpander?: (props: TreeExpanderRenderProps) => ReactNode;
+  renderItem?: (props: TreeItemRenderProps) => ReactNode;
+  style?: CSSProperties;
+  searchQuery?: string;
+  searchScope?: SearchScope;
+};
+```
+
+| Prop | Default | One-line semantics |
+| --- | --- | --- |
+| `data` | — | Flat map including a `__root__` entry. Swapping the object preserves state. |
+| `height` | `"100%"` | Scroll container height. `"100%"` needs a parent with a resolved height. |
+| `checkedItems` | `undefined` | Controlled checked **leaf** IDs. Folder IDs are ignored. |
+| `onCheck` | `undefined` | Called with every checked leaf ID; never a folder ID. |
+| `expandedItems` | `undefined` | Controlled expanded folder IDs. The root is always kept expanded. |
+| `onExpand` | `undefined` | Called with every expanded folder ID, `"__root__"` included. |
+| `searchQuery` | `undefined` | Filters to matches plus ancestors. Case- and diacritic-insensitive. |
+| `searchScope` | `"all"` | `"all"` matches folder labels too; `"leaves"` does not. |
+| `minSearchChars` | `3` | Below this length the query is inert. |
+| `renderItem` | `undefined` | Replaces the row body. Receives an object, not the item. |
+| `renderCheckbox` | `undefined` | Replaces the checkbox. Must spread `a11yProps`. |
+| `renderExpander` | `undefined` | Replaces the expander. Called only for folders. Must spread `a11yProps`. |
+| `estimateSize` | `32` | Row height in pixels, or a function of the row index. |
+| `overscan` | `8` | Rows rendered above and below the viewport. |
+| `indent` | `20` | Pixels of indentation per level. |
+| `className` | `undefined` | Class on the scroll container. |
+| `style` | `undefined` | Inline style on the scroll container; merged after the component's own. |
+| `"aria-label"` | `"Tree"` | Accessible name. Ignored when `aria-labelledby` is set. |
+| `"aria-labelledby"` | `undefined` | ID of a labelling element. |
+
+## `TreeRef`
+
+```ts
+export type TreeRef = {
+  collapseAll: () => void;
+  expandAll: () => void;
+  getEngine: () => Engine;
+  focusId: (id: string) => void;
+  scrollToId: (id: string) => void;
+};
+```
+
+| Method | Description |
+| --- | --- |
+| `expandAll()` | Expands every folder. |
+| `collapseAll()` | Collapses every folder except the structural root. |
+| `focusId(id)` | Expands ancestors, scrolls the node into view, makes it the keyboard-active row, and focuses the tree container. |
+| `scrollToId(id)` | Expands ancestors and scrolls the node into view, without touching focus or the active row. |
+| `getEngine()` | The live `Engine`, for anything the props do not cover. |
+
+## `TreeItemRenderProps`
+
+What `renderItem` receives. Note this is an **object**, not the item — `renderItem(item)` is not the
+signature.
+
+```ts
+export type TreeItemRenderProps = {
+  checkedState: CheckedState;
+  id: string;
+  isActive: boolean;
+  isExpanded: boolean;
+  isFolder: boolean;
+  item: TreeItem;
+  level: number;
+};
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `checkedState` | `CheckedState` | The state being rendered — the search-aware one, matching `data-state`. |
+| `id` | `string` | Node ID. |
+| `isActive` | `boolean` | Whether this is the keyboard-active row. |
+| `isExpanded` | `boolean` | Whether this folder is open. `false` for leaves. |
+| `isFolder` | `boolean` | Whether the node has children. |
+| `item` | `TreeItem` | The underlying item, including your `data` blob. |
+| `level` | `number` | Depth below the root; top-level rows are `0`. |
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["src"] },
+  src: { id: "src", label: "src", children: ["engine"] },
+  engine: { id: "engine", label: "engine.ts", data: { size: 4096 } },
+};
+
+export function WithFileSizes() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      height={320}
+      renderItem={({ isFolder, item, level }) => (
+        <span data-depth={level}>
+          {item.label}
+          {!isFolder && <small> {String(item.data?.size ?? 0)} B</small>}
+        </span>
+      )}
+    />
+  );
+}
+```
+
+## `TreeCheckboxRenderProps`
+
+What `renderCheckbox` receives.
+
+```ts
+export type TreeCheckboxRenderProps = {
+  a11yProps: { "aria-hidden": true; tabIndex: -1 };
+  checkedState: CheckedState;
+  id: string;
+  isActive: boolean;
+  isExpanded: boolean;
+  isFolder: boolean;
+  item: TreeItem;
+  level: number;
+  onChange: (nextChecked: boolean) => void;
+};
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `a11yProps` | `{ "aria-hidden": true; tabIndex: -1 }` | **Spread this onto your control.** The row carries `role="treeitem"` and `aria-checked`; the visual checkbox must stay out of the tab order and out of the accessibility tree, or every row is announced twice. |
+| `checkedState` | `CheckedState` | `"checked"`, `"unchecked"` or `"indeterminate"`. |
+| `id` | `string` | Node ID. |
+| `isActive` | `boolean` | Whether this is the keyboard-active row. |
+| `isExpanded` | `boolean` | Whether this folder is open. `false` for leaves. |
+| `isFolder` | `boolean` | Whether the node has children. Folders get a checkbox too — a derived one. |
+| `item` | `TreeItem` | The underlying item. |
+| `level` | `number` | Depth below the root. |
+| `onChange` | `(nextChecked: boolean) => void` | Call with the next checked value. You rarely need it: the wrapper span already handles clicks and forwards them, so a purely visual element works. Use it when your control has its own change event. |
+
+## `TreeExpanderRenderProps`
+
+What `renderExpander` receives. It is called **only for folders**, so there is no `checkedState` and
+no `isActive` on it.
+
+```ts
+export type TreeExpanderRenderProps = {
+  a11yProps: { "aria-hidden": true; tabIndex: -1 };
+  id: string;
+  isExpanded: boolean;
+  isFolder: boolean;
+  item: TreeItem;
+  level: number;
+  onToggle: () => void;
+};
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `a11yProps` | `{ "aria-hidden": true; tabIndex: -1 }` | Spread onto your expander — the row already exposes `aria-expanded`. |
+| `id` | `string` | Node ID. |
+| `isExpanded` | `boolean` | Whether the folder is open. |
+| `isFolder` | `boolean` | Always `true` here. |
+| `item` | `TreeItem` | The underlying item. |
+| `level` | `number` | Depth below the root. |
+| `onToggle` | `() => void` | Opens or closes the folder. Call `event.stopPropagation()` first if your expander is a button, or the row's own click handler will toggle it straight back. |
+
+```tsx
+import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+
+const fileTree: TreeDefinition = {
+  __root__: { id: "__root__", label: "root", children: ["src"] },
+  src: { id: "src", label: "src", children: ["engine"] },
+  engine: { id: "engine", label: "engine.ts" },
+};
+
+export function ChevronExpander() {
+  return (
+    <Tree
+      aria-label="Project files"
+      data={fileTree}
+      height={320}
+      renderExpander={({ a11yProps, isExpanded, onToggle }) => (
+        <button
+          {...a11yProps}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+          type="button"
+        >
+          {isExpanded ? "▾" : "▸"}
+        </button>
+      )}
+    />
+  );
+}
+```
+
+## `EngineOptions`
+
+```ts
+export type EngineOptions = {
+  initialExpanded?: string[];
+  minSearchChars?: number;
+  rootId?: string;
+  searchScope?: SearchScope;
+};
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `initialExpanded` | `string[]` | `[]` | Folder IDs expanded on construction. Non-folder IDs are ignored; the root is always expanded. |
+| `minSearchChars` | `number` | `3` | Minimum query length before search activates. Clamped to at least `1`. |
+| `rootId` | `string` | `"__root__"` | ID of the never-rendered root node. |
+| `searchScope` | `SearchScope` | `"all"` | Which labels search matches. |
+
+`<Tree>` constructs its engine with `minSearchChars` and `searchScope` from its own props. There is
+no prop for `rootId` or `initialExpanded` — use the `expandedItems` prop for the latter, and build an
+`Engine` yourself if you need a different root key.
+
+## Types that do not exist
+
+Worth stating plainly, because people go looking for them:
+
+- There is no `onLoadChildren` and no async node type. The engine wants the whole map up front.
+- There is no `checkStrictly` option and no checkable-folder state. Folders derive; `onCheck` returns
+  leaf IDs only.
+- There is no drag-and-drop, rename, or context-menu type surface. Those are explicit non-goals.
+- `TreeItem.id` is typed `number | string`, but the `TreeDefinition` **key** is what the engine
+  indexes by, and every ID it hands back to you is a `string`.
