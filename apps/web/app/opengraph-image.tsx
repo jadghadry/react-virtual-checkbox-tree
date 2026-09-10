@@ -23,6 +23,10 @@ const ROWS = [
   { state: "mixed", label: "ui", depth: 1, folder: true },
   { state: "on", label: "tree.tsx", depth: 2, folder: false },
   { state: "off", label: "row.tsx", depth: 2, folder: false },
+  { state: "mixed", label: "hooks", depth: 2, folder: true },
+  { state: "on", label: "use-tree.ts", depth: 3, folder: false },
+  { state: "off", label: "use-focus.ts", depth: 3, folder: false },
+  { state: "off", label: "types.ts", depth: 1, folder: false },
   { state: "off", label: "docs", depth: 0, folder: true },
 ] as const;
 
@@ -111,6 +115,25 @@ export default function OpenGraphImage() {
             >
               {site.tagline}
             </div>
+
+            {/* The card is a link preview, so the reader is one decision away
+                from trying it. Give them the command rather than the gap. */}
+            <div
+              style={{
+                alignItems: "center",
+                backgroundColor: "#141414",
+                border: "1px solid #2b2b2b",
+                borderRadius: 10,
+                display: "flex",
+                fontFamily: MONO,
+                fontSize: 24,
+                marginTop: 36,
+                padding: "16px 22px",
+              }}
+            >
+              <span style={{ color: "#5f5f5f" }}>$&nbsp;</span>
+              <span style={{ color: "#d4d4d4" }}>npm i {site.name}</span>
+            </div>
           </div>
 
           <div
@@ -120,9 +143,9 @@ export default function OpenGraphImage() {
               borderRadius: 12,
               display: "flex",
               flexDirection: "column",
-              gap: 14,
-              padding: "22px 26px",
-              width: 360,
+              gap: 11,
+              padding: "20px 24px",
+              width: 384,
             }}
           >
             {ROWS.map((row) => (
@@ -132,7 +155,7 @@ export default function OpenGraphImage() {
                   alignItems: "center",
                   display: "flex",
                   gap: 12,
-                  paddingLeft: row.depth * 26,
+                  paddingLeft: row.depth * 22,
                 }}
               >
                 <Box state={row.state} />
