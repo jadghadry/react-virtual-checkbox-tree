@@ -1,0 +1,23 @@
+name: Feature request
+description: Something the library should be able to do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Before filing: drag-and-drop, inline rename, and multi-tree environments are
+        explicit non-goals — they're where the alternatives spend their bundle, and
+        chasing them would cost the size that is this library's reason to exist.
+        Everything else is fair game.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The use case, not the API. What does your UI need to express?
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What are you doing today instead?
+      description: Including "I gave up and used something else" — that's useful to know.

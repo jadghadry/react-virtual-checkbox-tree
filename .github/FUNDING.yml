@@ -1,0 +1,7 @@
+# Enables the "Sponsor" button on the repository.
+# Uncomment a line once the corresponding account exists — GitHub hides any
+# entry it cannot resolve, and an unresolvable one shows as a broken link.
+github: [jadghadry]
+# ko_fi: jadghadry
+# buy_me_a_coffee: jadghadry
+# custom: ["https://react-virtual-checkbox-tree.vercel.app"]

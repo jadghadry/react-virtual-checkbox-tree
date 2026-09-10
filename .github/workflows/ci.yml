@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  library:
+    name: Library (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck --workspace react-virtual-checkbox-tree
+      - name: Test
+        run: npm run test --workspace react-virtual-checkbox-tree
+      - name: Build
+        run: npm run build --workspace react-virtual-checkbox-tree
+
+      # This is the gate that would have caught v0.1.0 shipping a `main` field
+      # pointing at a file the build never emitted.
+      - name: Validate published package
+        run: npm run lint:package --workspace react-virtual-checkbox-tree
+
+      - name: Verify every declared entry point exists
+        run: |
+          cd packages/react-virtual-checkbox-tree
+          node --input-type=module -e '
+            import { readFileSync, existsSync } from "node:fs";
+            const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+            const paths = new Set([pkg.main, pkg.module, pkg.types]);
+            const walk = (v) => {
+              if (typeof v === "string") paths.add(v);
+              else if (v && typeof v === "object") Object.values(v).forEach(walk);
+            };
+            walk(pkg.exports);
+            const missing = [...paths].filter((p) => p && p.startsWith("./dist") && !existsSync(p));
+            if (missing.length) {
+              console.error("Declared but not emitted:\n" + missing.map((m) => "  " + m).join("\n"));
+              process.exit(1);
+            }
+            console.log([...paths].length + " entry points, all present.");
+          '
+
+      - name: Smoke-test both module systems
+        run: |
+          cd packages/react-virtual-checkbox-tree
+          node --input-type=module -e '
+            import { Engine, CheckedState } from "./dist/engine.js";
+            const e = new Engine({ __root__: { id: "__root__", label: "r", children: ["a"] }, a: { id: "a", label: "A" } });
+            e.toggle("a", true);
+            if (e.getState("a") !== CheckedState.Checked) throw new Error("ESM import broken");
+            console.log("ESM ok");
+          '
+          node --input-type=commonjs -e '
+            const { Engine, CheckedState } = require("./dist/engine.cjs");
+            const e = new Engine({ __root__: { id: "__root__", label: "r", children: ["a"] }, a: { id: "a", label: "A" } });
+            e.toggle("a", true);
+            if (e.getState("a") !== CheckedState.Checked) throw new Error("CJS require broken");
+            console.log("CJS ok");
+          '
+
+  drift:
+    name: Docs and README in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/sync-readme.mjs --check
+      - run: node scripts/check-docs-drift.mjs
+
+  site:
+    name: Docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace react-virtual-checkbox-tree
+      - run: npm run typecheck --workspace web
+      - run: npm run build --workspace web

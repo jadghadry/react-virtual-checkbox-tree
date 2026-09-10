@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or usage help
+    url: https://github.com/jadghadry/react-virtual-checkbox-tree/discussions
+    about: Ask here rather than opening an issue.
+  - name: Documentation and live demo
+    url: https://react-virtual-checkbox-tree.vercel.app
+    about: The FAQ answers most questions.
