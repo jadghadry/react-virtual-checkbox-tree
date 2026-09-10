@@ -1,0 +1,15 @@
+version: 2
+
+updates:
+  # GitHub periodically retires the Node runtime that actions execute on, and a
+  # pinned major silently falls behind until a deprecation warning shows up in a
+  # release run. One grouped PR a month keeps that from being a surprise.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
