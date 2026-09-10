@@ -1,3 +1,5 @@
+import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import type { Metadata, Viewport } from "next";
 
 import { Footer } from "@/components/footer";
@@ -41,6 +43,15 @@ export const metadata: Metadata = {
     title: `${site.name} — ${site.tagline}`,
     description: site.description,
   },
+  // Set in Vercel -> Settings -> Environment Variables once each property is
+  // created. Kept out of the source so verifying a new search engine is a
+  // dashboard change rather than a deploy.
+  verification: {
+    google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
+    other: process.env.NEXT_PUBLIC_BING_SITE_VERIFICATION
+      ? { "msvalidate.01": process.env.NEXT_PUBLIC_BING_SITE_VERIFICATION }
+      : {},
+  },
   robots: {
     index: true,
     follow: true,
@@ -76,6 +87,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Nav />
         <main id="main">{children}</main>
         <Footer />
+        {/* Cookieless and first-party, so no consent banner and nothing to disclose
+            beyond this. Vercel Analytics gives referrers, which is the only way
+            to tell which launch channel actually sent people. */}
+        <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );

@@ -61,3 +61,16 @@ README and on the docs site come straight from that script and are re-run per re
 
 Match the surrounding code. Props and object keys are alphabetized; public methods carry TSDoc;
 comments explain *why*, not *what*.
+
+## Site environment variables
+
+All optional — the site builds and runs without any of them.
+
+| Variable | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata, `sitemap.xml` and OG images. Defaults to the Vercel URL; set this when a custom domain lands. |
+| `NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION` | The token from Google Search Console's HTML-tag verification. Set it, redeploy, then click Verify. |
+| `NEXT_PUBLIC_BING_SITE_VERIFICATION` | The equivalent from Bing Webmaster Tools. Worth having: ChatGPT and Copilot search lean on Bing's index. |
+
+Set them in Vercel under Settings → Environment Variables so verifying a search
+engine is a dashboard change rather than a commit.
