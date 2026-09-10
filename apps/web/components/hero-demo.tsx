@@ -42,18 +42,28 @@ export function HeroDemo() {
   const [mountedRows, setMountedRows] = useState(0);
   const [visibleRows, setVisibleRows] = useState(0);
   const [isPending, startTransition] = useTransition();
+  // The size being built, so the overlay can name it. During a transition `size`
+  // still holds the old value.
+  const [pendingSize, setPendingSize] = useState<null | number>(null);
 
   const treeRef = useRef<TreeRef>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const deferredQuery = useDeferredValue(query);
-  const buildMs = useRef(0);
-  const { data, folderCount, leafCount, nodeCount } = useMemo(() => {
-    const start = performance.now();
-    const result = generateTree(size);
-    buildMs.current = performance.now() - start;
-    return result;
-  }, [size]);
+
+  // Stamped when the size button is clicked and read once the new tree has
+  // committed, so this covers what the user is actually waiting through:
+  // generating the data, the Engine indexing it, and React's commit.
+  //
+  // It used to time generateTree() alone and label the result "built tree",
+  // which under-reported by ~4x at a million nodes — generation is the smaller
+  // half of that wait. A metric that flatters the thing it measures is worse
+  // than no metric.
+  const buildStartedAt = useRef<null | number>(null);
+  const { data, folderCount, leafCount, nodeCount } = useMemo(
+    () => generateTree(size),
+    [size]
+  );
 
   // Open a few branches on load so the tree reads as a tree rather than a list
   // of twelve closed folders.
@@ -100,14 +110,26 @@ export function HeroDemo() {
   // anyone who switches away mid-click. React paints the pending state either
   // way.
   const changeSize = (next: (typeof SIZES)[number]) => {
+    if (next === size) return;
     setLastOpMs(null);
+    setPendingSize(next);
+    buildStartedAt.current = performance.now();
     startTransition(() => setSize(next));
   };
 
   useEffect(() => {
-    setLastOpMs(buildMs.current);
-    setLastOpLabel("built tree");
     measure();
+    setPendingSize(null);
+    if (buildStartedAt.current === null) return;
+    const startedAt = buildStartedAt.current;
+    buildStartedAt.current = null;
+    // Read the clock here rather than inside requestAnimationFrame: rAF is
+    // paused in a background tab, so a reader who switched away mid-build would
+    // come back to a metric that never filled in. This lands after React has
+    // committed the new rows — the Tree's own effects run before this one — and
+    // only misses the paint of the ~22 rows on screen.
+    setLastOpMs(performance.now() - startedAt);
+    setLastOpLabel("ready in");
   }, [data, measure]);
 
   return (
@@ -174,7 +196,7 @@ export function HeroDemo() {
         <div className="relative" ref={containerRef}>
           {isPending && (
             <div className="absolute inset-0 z-10 grid place-items-center bg-[var(--color-surface)]/80 font-mono text-[12px] text-[var(--color-muted)]">
-              building the tree…
+              building {(pendingSize ?? size).toLocaleString()} nodes…
             </div>
           )}
           <Tree
