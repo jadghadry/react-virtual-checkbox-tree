@@ -26,6 +26,10 @@ coverage/
 .prettierrc
 
 
+# agent instruction files, rewritten by `next dev` on every start
+apps/web/AGENTS.md
+apps/web/CLAUDE.md
+
 # editor / tool configs
 .claude/
 .vscode/

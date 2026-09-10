@@ -25,6 +25,11 @@ const withMDX = createMDX({
         {
           themes: { dark: "github-dark-default", light: "github-light-default" },
           defaultColor: false,
+          // Emits `language-<lang>` on the <pre>. Shiki otherwise drops the
+          // fence's language, and the block header has nothing to label itself
+          // with. Transformers would be the richer route, but Turbopack requires
+          // serializable plugin options and a transformer is a function.
+          addLanguageClass: true,
         },
       ],
     ],

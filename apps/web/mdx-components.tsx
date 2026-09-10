@@ -27,18 +27,23 @@ export function useMDXComponents(components: MDXComponents): MDXComponents {
       );
     },
     Callout,
-    pre: ({ children, ...props }) => {
+    // Shiki (via @shikijs/rehype) has already highlighted this at build time and
+    // put its own `className` on the <pre>. Destructure it out and merge, rather
+    // than spreading props over ours — a plain `{...props}` after `className`
+    // silently replaces our styling with Shiki's and the block loses its padding.
+    pre: ({ children, className, ...props }) => {
       const code = extractText(children);
+      // `addLanguageClass` puts `language-<lang>` on the inner <code>, not the
+      // <pre>, so read it off the child.
+      const language = extractLanguage(children) ?? "code";
       return (
         <figure className="my-5 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">
-          <figcaption className="flex items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-1.5">
-            <span className="font-mono text-[11px] text-[var(--color-faint)]">
-              {String((props as { "data-language"?: string })["data-language"] ?? "code")}
-            </span>
+          <figcaption className="flex items-center justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-1.5">
+            <span className="font-mono text-[11px] text-[var(--color-faint)]">{language}</span>
             <CopyButton text={code} />
           </figcaption>
           <pre
-            className="overflow-x-auto p-3 font-mono text-[12.5px] leading-[1.65] bg-transparent!"
+            className={`overflow-x-auto px-4 py-3.5 font-mono text-[12.5px] leading-[1.7] ${className ?? ""}`}
             {...props}
           >
             {children}
@@ -53,6 +58,12 @@ export function useMDXComponents(components: MDXComponents): MDXComponents {
     ),
     ...components,
   };
+}
+
+function extractLanguage(node: React.ReactNode): null | string {
+  if (!node || typeof node !== "object" || !("props" in node)) return null;
+  const { className } = (node as { props: { className?: string } }).props;
+  return /language-(\w+)/.exec(className ?? "")?.[1] ?? null;
 }
 
 function extractText(node: React.ReactNode): string {

@@ -69,6 +69,35 @@ body {
   font-feature-settings: "tnum";
 }
 
+/* ---- syntax highlighting ------------------------------------------------
+   Shiki runs at build time with two themes and `defaultColor: false`, so it
+   emits every token's color as a pair of custom properties rather than a
+   concrete `color`. That keeps one copy of the markup for both themes, but it
+   means nothing is colored until this block maps the variables — without it
+   the highlighter runs, the spans are there, and the code renders monochrome. */
+.shiki,
+.shiki span {
+  background-color: transparent;
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style);
+  font-weight: var(--shiki-dark-font-weight);
+  text-decoration: var(--shiki-dark-text-decoration);
+}
+
+[data-theme="light"] .shiki,
+[data-theme="light"] .shiki span {
+  color: var(--shiki-light);
+  font-style: var(--shiki-light-font-style);
+  font-weight: var(--shiki-light-font-weight);
+  text-decoration: var(--shiki-light-text-decoration);
+}
+
+/* Long lines scroll; the line should still clear the block's right edge. */
+.shiki code {
+  display: inline-block;
+  min-width: 100%;
+}
+
 ::selection {
   background: color-mix(in oklch, var(--color-accent) 35%, transparent);
 }
@@ -182,6 +211,20 @@ body {
   text-underline-offset: 3px;
   text-decoration: underline;
   text-decoration-color: color-mix(in oklch, var(--color-accent) 40%, transparent);
+}
+
+/* rehype-autolink-headings wraps each heading's text in an anchor so it can be
+   linked. Left alone it inherits the link styling above and every heading on
+   the site reads as a link. The anchor stays — it is what makes headings
+   deep-linkable — it just has to look like the heading it wraps. */
+.prose-rvct :where(h1, h2, h3, h4) a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.prose-rvct :where(h1, h2, h3, h4) a:hover {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--color-fg) 30%, transparent);
 }
 
 .prose-rvct :where(strong) {
