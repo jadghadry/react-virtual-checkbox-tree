@@ -77,16 +77,8 @@ export default function Home() {
       />
 
       {/* ---- hero ---- */}
-      <section className="relative overflow-hidden border-b border-[var(--color-border)]">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute left-1/2 top-0 h-[420px] w-[900px] -translate-x-1/2 opacity-[0.13]"
-          style={{
-            background:
-              "radial-gradient(closest-side, var(--color-accent), transparent 70%)",
-          }}
-        />
-        <div className="relative mx-auto max-w-6xl px-4 pb-14 pt-14 sm:px-6 sm:pt-20">
+      <section className="border-b border-[var(--color-border)]">
+        <div className="mx-auto max-w-6xl px-4 pb-14 pt-14 sm:px-6 sm:pt-20">
           <p className="mb-5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-faint)]">
             <span>Headless</span>
             <Dot />
