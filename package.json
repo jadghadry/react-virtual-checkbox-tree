@@ -1,53 +1,38 @@
 {
-  "name": "react-virtual-checkbox-tree",
-  "version": "0.1.0",
-  "description": "Headless, virtualized checkbox tree for React using @tanstack/react-virtual.",
+  "name": "react-virtual-checkbox-tree-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Monorepo for react-virtual-checkbox-tree and its documentation site.",
   "author": "Jade Ghadry",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jadghadry/react-virtual-checkbox-tree.git"
   },
-  "bugs": {
-    "url": "https://github.com/jadghadry/react-virtual-checkbox-tree/issues"
-  },
-  "homepage": "https://github.com/jadghadry/react-virtual-checkbox-tree#readme",
-  "main": "dist/index.cjs",
-  "module": "dist/index.mjs",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.cjs",
-      "import": "./dist/index.mjs"
-    }
-  },
-  "files": [
-    "dist"
+  "workspaces": [
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
-    "build": "tsup",
-    "prepublishOnly": "npm run build"
+    "build": "npm run build --workspace react-virtual-checkbox-tree",
+    "build:web": "npm run build --workspace web",
+    "dev": "npm run dev --workspace web",
+    "dev:lib": "npm run dev --workspace react-virtual-checkbox-tree",
+    "test": "npm run test --workspace react-virtual-checkbox-tree",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "bench": "npm run bench --workspace react-virtual-checkbox-tree",
+    "lint:package": "npm run lint:package --workspace react-virtual-checkbox-tree",
+    "sync:readme": "node scripts/sync-readme.mjs",
+    "release": "npm publish --workspace react-virtual-checkbox-tree",
+    "check:drift": "node scripts/check-docs-drift.mjs",
+    "check:readme": "node scripts/sync-readme.mjs --check",
+    "record:demo": "node scripts/record-demo.mjs"
   },
-  "keywords": [
-    "checkbox",
-    "headless",
-    "react",
-    "tanstack",
-    "tree",
-    "virtualized"
-  ],
-  "license": "MIT",
-  "peerDependencies": {
-    "react": ">=18.0.0",
-    "react-dom": ">=18.0.0"
+  "engines": {
+    "node": ">=18"
   },
-  "dependencies": {
-    "@tanstack/react-virtual": "^3.0.0"
-  },
-  "devDependencies": {
-    "tsup": "^8.0.0",
-    "typescript": "^5.0.0",
-    "@types/react": "^18.0.0",
-    "@types/react-dom": "^18.0.0"
+  "allowScripts": {
+    "esbuild@0.27.7": true,
+    "fsevents@2.3.3": true
   }
 }
