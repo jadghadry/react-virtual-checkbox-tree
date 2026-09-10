@@ -1,2 +1,32 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# testing
+coverage/
+
+# env
+.env
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+*.tgz
+.vercel
+.turbo
 .prettierrc
-node_modules
+
+
+# editor / tool configs
+.claude/
+.vscode/
+.idea/
