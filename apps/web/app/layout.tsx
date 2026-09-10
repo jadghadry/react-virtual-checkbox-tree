@@ -30,18 +30,17 @@ export const metadata: Metadata = {
     "indeterminate checkbox react",
   ],
   alternates: { canonical: "/" },
+  // Deliberately no title/description/url here. Metadata merges shallowly, so
+  // declaring them at the root made all 38 pages advertise themselves as the
+  // homepage when shared. Left unset, Next falls these back to each page own
+  // title and description — only the genuinely global fields belong at the root.
   openGraph: {
     type: "website",
-    url: site.url,
     siteName: site.name,
-    title: `${site.name} — ${site.tagline}`,
-    description: site.description,
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: `${site.name} — ${site.tagline}`,
-    description: site.description,
   },
   // Set in Vercel -> Settings -> Environment Variables once each property is
   // created. Kept out of the source so verifying a new search engine is a
