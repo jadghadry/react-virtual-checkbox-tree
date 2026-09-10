@@ -6,22 +6,52 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for npm provenance
+  # Lets the runner mint an OIDC token, which npm exchanges for short-lived
+  # publish rights. This is what removes the need for an NPM_TOKEN secret, and
+  # it is also what signs the provenance attestation.
+  id-token: write
 
 jobs:
   publish:
+    name: Publish to npm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1. Node 24 is close but the bundled
+      # version moves, so pin the floor explicitly rather than inherit it.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       - run: npm ci
+
+      # The tag says 0.2.0; the package should agree. Cheap check, and it beats
+      # discovering the mismatch in the published registry entry.
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./packages/react-virtual-checkbox-tree/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PKG" >&2
+            exit 1
+          fi
+          echo "Tag and package agree on $PKG."
+
       - run: npm run test --workspace react-virtual-checkbox-tree
       - run: npm run build --workspace react-virtual-checkbox-tree
       - run: npm run lint:package --workspace react-virtual-checkbox-tree
-      - run: npm publish --workspace react-virtual-checkbox-tree
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Published from the package directory rather than with --workspace: it is
+      # the path npm's OIDC flow is documented against, and `prepack` resolves
+      # the same either way.
+      - name: Publish
+        working-directory: packages/react-virtual-checkbox-tree
+        run: npm publish
