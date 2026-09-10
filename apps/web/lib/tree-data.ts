@@ -109,6 +109,34 @@ export function generateTree(targetNodes: number, seed = 42): GeneratedTree {
     data[node.id].children = children;
   }
 
+  // The shape loop stops once every folder it created sits at maxDepth, which
+  // for large targets drains the queue long before the target is reached — a
+  // request for 1,000,000 used to quietly return 200,946, while the button that
+  // asked for it still said "1M". Top up by distributing the shortfall as leaves
+  // across the folders that already exist.
+  //
+  // This runs only when the shape loop fell short, so targets it already hits
+  // exactly (10k, 100k) produce byte-identical trees to before.
+  if (counter < targetNodes) {
+    const folders = Object.keys(data).filter(
+      (id) => id !== "__root__" && Array.isArray(data[id].children)
+    );
+    let i = 0;
+    while (counter < targetNodes && folders.length > 0) {
+      const parent = data[folders[i % folders.length]];
+      const id = `n${counter++}`;
+      const ext = EXTS[Math.floor(rand() * EXTS.length)];
+      data[id] = {
+        id,
+        label: `${FILES[Math.floor(rand() * FILES.length)]}-${id.slice(1)}${ext}`,
+        data: { kind: "file", size: Math.floor(rand() * 90_000) + 200 },
+      };
+      parent.children!.push(id);
+      leafCount++;
+      i++;
+    }
+  }
+
   // Any folder still queued never got children; demote it to a file so the tree
   // has no empty folders masquerading as checkable leaves.
   for (const { id } of queue) {
