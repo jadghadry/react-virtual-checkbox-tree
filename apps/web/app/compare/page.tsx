@@ -53,8 +53,11 @@ const ROWS: Row[] = [
   {
     name: "react-virtual-checkbox-tree",
     weekly: "8",
-    gzip: "5.6 kB",
-    gzipNote: "12.6 kB including @tanstack/react-virtual, its one dependency",
+    // Every other row is measured with that library's dependencies included, so
+    // this one has to be too. Quoting 5.6 kB here — the library on its own —
+    // would be comparing against numbers built on different terms.
+    gzip: "12.6 kB",
+    gzipNote: "5.6 kB for the library itself, plus @tanstack/react-virtual, its one dependency",
     values: {
       aria: "yes",
       async: "no",
@@ -358,8 +361,12 @@ export default function CompareIndex() {
         <p className="mt-3 text-[12.5px] leading-relaxed text-[var(--color-faint)]">
           Last verified <span className="tnum font-mono">{VERIFIED_ON}</span>. Hover any half-filled
           cell for the caveat — every one of them has a caveat, including ours. Downloads are the npm
-          registry&rsquo;s own numbers for 2026-08-31 → 2026-09-06; gzip figures are Bundlephobia&rsquo;s
-          for the exact published versions.
+          registry&rsquo;s own numbers for 2026-08-31 → 2026-09-06. Gzip figures are
+          Bundlephobia&rsquo;s for the exact published versions, and include each library&rsquo;s
+          dependencies — ours too, which is why this table says 12.6 kB where the rest of the site
+          says 5.6 kB for the library on its own. Our figure comes from{" "}
+          <code className="font-mono">npm run size</code> in the repo, so you can reproduce it rather
+          than take it on trust.
         </p>
 
         <section className="mt-12">

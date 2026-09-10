@@ -10,9 +10,13 @@ import { SearchTeleport } from "@/components/search-teleport";
 import { Section } from "@/components/section";
 import { benchmarks, bundleSize, site } from "@/lib/site";
 
+// Deliberately shorter than site.name + site.tagline, which together run to 82
+// characters and get cut off in search results. Every other page on the site is
+// already inside the limits; the homepage was the one over.
 export const metadata: Metadata = {
-  title: `${site.name} — ${site.tagline}`,
-  description: site.description,
+  title: "react-virtual-checkbox-tree — React tree for 100,000 nodes",
+  description:
+    "Headless, virtualized checkbox tree for React. Tri-state parents, ancestor-aware search, full keyboard navigation, and no CSS you didn't write.",
   alternates: { canonical: "/" },
 };
 

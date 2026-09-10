@@ -152,7 +152,7 @@ export default function Page() {
           facts={[
             {
               label: "Package, current",
-              value: "@rc-component/tree 1.5.2, published 2026-08-27",
+              value: "@rc-component/tree 1.5.3, published 2026-09-10",
               source: "https://www.npmjs.com/package/@rc-component/tree",
               sourceLabel: "npm",
             },
@@ -375,7 +375,7 @@ function jsonLd() {
             name: "What is the difference between rc-tree and @rc-component/tree?",
             acceptedAnswer: {
               "@type": "Answer",
-              text: "They are the same project under two package names. rc-tree 5.13.1 was last published in February 2025 and still has 2.2 million weekly downloads; @rc-component/tree 1.5.2 is the current line, published in August 2026, and is what Ant Design 6 imports.",
+              text: "They are the same project under two package names. rc-tree 5.13.1 was last published in February 2025 and still has 2.2 million weekly downloads; @rc-component/tree 1.5.3 is the current line, published in September 2026, and is what Ant Design 6 imports.",
             },
           },
         ],
