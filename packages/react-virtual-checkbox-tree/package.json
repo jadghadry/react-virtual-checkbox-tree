@@ -1,53 +1,116 @@
 {
   "name": "react-virtual-checkbox-tree",
-  "version": "0.1.0",
-  "description": "Headless, virtualized checkbox tree for React using @tanstack/react-virtual.",
+  "version": "0.2.0",
+  "description": "Headless, virtualized checkbox tree for React — tri-state parents, ancestor-aware search, and 100k+ nodes.",
   "author": "Jade Ghadry",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jadghadry/react-virtual-checkbox-tree.git"
+    "url": "git+https://github.com/jadghadry/react-virtual-checkbox-tree.git",
+    "directory": "packages/react-virtual-checkbox-tree"
   },
   "bugs": {
     "url": "https://github.com/jadghadry/react-virtual-checkbox-tree/issues"
   },
-  "homepage": "https://github.com/jadghadry/react-virtual-checkbox-tree#readme",
-  "main": "dist/index.cjs",
-  "module": "dist/index.mjs",
-  "types": "dist/index.d.ts",
+  "homepage": "https://react-virtual-checkbox-tree.vercel.app",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "engine": [
+        "./dist/engine.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.cjs",
-      "import": "./dist/index.mjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./engine": {
+      "import": {
+        "types": "./dist/engine.d.ts",
+        "default": "./dist/engine.js"
+      },
+      "require": {
+        "types": "./dist/engine.d.cts",
+        "default": "./dist/engine.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsup",
-    "prepublishOnly": "npm run build"
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bench": "node benchmarks/engine.bench.mjs",
+    "lint:package": "publint && attw --pack .",
+    "prepack": "node ../../scripts/sync-readme.mjs && npm run build",
+    "size": "node ../../scripts/report-size.mjs"
   },
   "keywords": [
+    "checkbox-tree",
     "checkbox",
     "headless",
+    "indeterminate",
+    "large-data",
+    "nested-checkbox",
     "react",
+    "react-component",
+    "react-tree",
+    "select-tree",
     "tanstack",
     "tree",
-    "virtualized"
+    "tree-view",
+    "treeview",
+    "tri-state",
+    "virtual-scroll",
+    "virtualized",
+    "virtualization"
   ],
-  "license": "MIT",
   "peerDependencies": {
-    "react": ">=18.0.0",
-    "react-dom": ">=18.0.0"
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.0.0"
   },
   "devDependencies": {
-    "tsup": "^8.0.0",
-    "typescript": "^5.0.0",
-    "@types/react": "^18.0.0",
-    "@types/react-dom": "^18.0.0"
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "jsdom": "^30.0.1",
+    "publint": "^0.3.14",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
   }
 }
