@@ -2,17 +2,42 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  library:
-    name: Library (node ${{ matrix.node }})
+  # The test toolchain (vitest 5, jsdom 30) needs Node 22+. That is a constraint
+  # on the runner, not on the library — what the library supports is proven by
+  # the `compat` job below, which runs the built bundle on every version in the
+  # published `engines` range.
+  test:
+    name: Test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck --workspace react-virtual-checkbox-tree
+      - name: Test
+        run: npm run test --workspace react-virtual-checkbox-tree
+
+  # Proves the *published artifact* actually loads on every Node version the
+  # package claims to support, through both module systems.
+  compat:
+    name: Package (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,17 +50,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - name: Typecheck
-        run: npm run typecheck --workspace react-virtual-checkbox-tree
-      - name: Test
-        run: npm run test --workspace react-virtual-checkbox-tree
       - name: Build
         run: npm run build --workspace react-virtual-checkbox-tree
-
-      # This is the gate that would have caught v0.1.0 shipping a `main` field
-      # pointing at a file the build never emitted.
-      - name: Validate published package
-        run: npm run lint:package --workspace react-virtual-checkbox-tree
 
       - name: Verify every declared entry point exists
         run: |
@@ -65,15 +81,30 @@ jobs:
             const e = new Engine({ __root__: { id: "__root__", label: "r", children: ["a"] }, a: { id: "a", label: "A" } });
             e.toggle("a", true);
             if (e.getState("a") !== CheckedState.Checked) throw new Error("ESM import broken");
-            console.log("ESM ok");
+            console.log("ESM ok on node " + process.version);
           '
           node --input-type=commonjs -e '
             const { Engine, CheckedState } = require("./dist/engine.cjs");
             const e = new Engine({ __root__: { id: "__root__", label: "r", children: ["a"] }, a: { id: "a", label: "A" } });
             e.toggle("a", true);
             if (e.getState("a") !== CheckedState.Checked) throw new Error("CJS require broken");
-            console.log("CJS ok");
+            console.log("CJS ok on node " + process.version);
           '
+
+  # The gate that would have caught v0.1.0 shipping a `main` field pointing at a
+  # file the build never emitted.
+  publish-check:
+    name: Validate published package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace react-virtual-checkbox-tree
+      - run: npm run lint:package --workspace react-virtual-checkbox-tree
 
   drift:
     name: Docs and README in sync
