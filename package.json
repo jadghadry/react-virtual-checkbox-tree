@@ -29,7 +29,7 @@
     "record:demo": "node scripts/record-demo.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "allowScripts": {
     "esbuild@0.27.7": true,
