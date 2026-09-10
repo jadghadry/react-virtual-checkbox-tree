@@ -187,15 +187,20 @@ export function CompareFooter({ slug }: { slug: string }) {
         and it gets fixed. Corrections that make a competitor look better are the most welcome kind.
       </p>
 
-      <ul className="mt-6 grid gap-px overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-border)] sm:grid-cols-2">
+      {/* Same card grid the /compare index uses for this list, so the two read as
+          one pattern rather than two. */}
+      <h2 className="mt-10 text-xl font-semibold tracking-[-0.02em]">Other comparisons</h2>
+      <ul className="mt-4 grid gap-px overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-border)] sm:grid-cols-2">
         {others.map((entry) => (
           <li className="bg-[var(--color-bg)]" key={entry.slug}>
             <Link
-              className="flex h-full flex-col p-4 transition-colors hover:bg-[var(--color-surface)]"
+              className="flex h-full flex-col p-5 transition-colors hover:bg-[var(--color-surface)]"
               href={`/compare/${entry.slug}`}
             >
-              <span className="text-[14px] font-medium">vs {entry.label}</span>
-              <span className="mt-1 text-[13px] text-[var(--color-faint)]">{entry.blurb}</span>
+              <span className="text-[15px] font-semibold tracking-[-0.01em]">{entry.label}</span>
+              <span className="mt-1 text-[13.5px] leading-relaxed text-[var(--color-muted)]">
+                {entry.blurb}
+              </span>
             </Link>
           </li>
         ))}
