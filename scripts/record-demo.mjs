@@ -2,7 +2,18 @@
 // Nothing here is staged: it drives the actual page with real clicks and
 // keystrokes, so the artifact in the README is a recording, not an illustration.
 //
-//   node record.mjs http://localhost:57860 out.gif
+// The recording tools are not project dependencies — they are only needed to
+// regenerate this one asset, and adding Playwright to the workspace would make
+// every CI install download a browser. Install them ad hoc:
+//
+//   npm i --no-save playwright pngjs gifenc && npx playwright install chromium
+//   npm run dev
+//   node scripts/record-demo.mjs http://localhost:3000 apps/web/public/demo.gif
+//
+// Pacing note: clicks are deliberately unhurried. A viewer needs a beat to see
+// the state before an action and another to read what changed after it —
+// otherwise the metrics row is a blur and the whole point is lost. Typing is
+// the exception; nobody types slowly.
 import { writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
@@ -35,6 +46,8 @@ const WIDTH = 1080;
 const HEIGHT = 900;
 const FPS = 10;
 const FRAME_MS = Math.round(1000 / FPS);
+// A collapsed hold longer than this reads as a stall rather than a pause.
+const MAX_HOLD_MS = 2600;
 
 const browser = await chromium.launch();
 const page = await browser.newPage({
@@ -92,48 +105,57 @@ const ticker = (async () => {
 })();
 
 const wait = (ms) => page.waitForTimeout(ms);
-const click = (label) => page.getByRole("button", { name: label, exact: true }).first().click();
+
+// Every click gets a beat before it (the viewer's eye reaches the control) and
+// a longer one after (they read the metrics that changed).
+async function click(label, settle = 1900) {
+  await wait(450);
+  await page.getByRole("button", { name: label, exact: true }).first().click();
+  await wait(settle);
+}
 
 // ---- the script ----------------------------------------------------------
-await wait(700);
+await wait(1100);
 
 // 1. Scale up to 100,000 nodes.
-await click("100k");
-await wait(1400);
+await click("100k", 2000);
 
-// 2. Expand every one of them. The DOM count does not move.
-await click("Expand all");
-await wait(1200);
+// 2. Expand every one of them. The DOM count does not move — the beat after
+//    this click is the one that has to land.
+await click("Expand all", 2200);
 
-// 3. Scroll through a hundred thousand rows.
+// 3. Scroll through a hundred thousand rows at a readable speed.
 const scroller = page.locator("[data-rvct-tree]").first();
-for (let i = 0; i < 14; i++) {
-  await scroller.evaluate((el) => el.scrollBy({ top: 900 }));
-  await wait(90);
+for (let i = 0; i < 13; i++) {
+  await scroller.evaluate((el) => el.scrollBy({ top: 620 }));
+  await wait(165);
 }
-await wait(400);
+await wait(950);
 await scroller.evaluate((el) => (el.scrollTop = 0));
-await wait(500);
+await wait(850);
 
 // 4. Cascade a selection across all of them.
-await click("Select all");
-await wait(1300);
-await click("Clear");
-await wait(600);
+await click("Select all", 2100);
+await click("Clear", 1300);
 
-// 5. Filter, one character at a time.
+// 5. Filter. Typing is the one thing that should feel quick.
 const search = page.getByLabel("Filter the tree").first();
 await search.click();
+await wait(550);
 for (const ch of "resolver") {
-  await search.type(ch, { delay: 0 });
-  await wait(140);
+  await search.pressSequentially(ch, { delay: 0 });
+  await wait(105);
 }
-await wait(1200);
+await wait(1900);
 
 // 6. Check a folder while filtered — only visible leaves are affected.
+await wait(400);
 const firstRow = page.locator("[data-rvct-row]").first();
 await firstRow.click();
-await wait(1100);
+await wait(2300);
+
+// Hold on the final state so the loop does not snap back mid-thought.
+await wait(1400);
 
 capturing = false;
 await ticker;
@@ -141,22 +163,34 @@ await browser.close();
 
 // ---- encode --------------------------------------------------------------
 console.log(`captured ${frames.length} frames at ${frames[0].width}x${frames[0].height}`);
-for (const i of [0, Math.floor(frames.length*0.25), Math.floor(frames.length*0.55), Math.floor(frames.length*0.8), frames.length-1]) {
-  writeFileSync(`frame-${i}.png`, PNG.sync.write(frames[i]));
-}
 
 const encoder = GIFEncoder();
 let palette = null;
 
-for (let i = 0; i < frames.length; i++) {
-  const { data, width, height } = halve(frames[i]);
+// The pauses that make the clip readable are, by definition, frames where
+// nothing moved. Rather than paying for each one, identical consecutive frames
+// collapse into a single frame with a longer delay — so a calmer recording is
+// also a smaller file.
+const timeline = [];
+for (const frame of frames) {
+  const { data, width, height } = halve(frame);
   // One palette for the whole clip: the UI is a fixed dark theme, so a shared
   // palette keeps the file small and avoids per-frame color flicker.
-  if (!palette) palette = quantize(data, 48, { format: "rgb565" });
+  palette ??= quantize(data, 48, { format: "rgb565" });
   const indexed = applyPalette(data, palette, "rgb565");
-  encoder.writeFrame(indexed, width, height, {
+
+  const previous = timeline.at(-1);
+  if (previous && previous.delay < MAX_HOLD_MS && sameFrame(previous.indexed, indexed)) {
+    previous.delay += FRAME_MS;
+  } else {
+    timeline.push({ delay: FRAME_MS, height, indexed, width });
+  }
+}
+
+for (const [i, frame] of timeline.entries()) {
+  encoder.writeFrame(frame.indexed, frame.width, frame.height, {
+    delay: frame.delay,
     palette: i === 0 ? palette : undefined,
-    delay: FRAME_MS,
     transparent: false,
   });
 }
@@ -164,4 +198,15 @@ for (let i = 0; i < frames.length; i++) {
 encoder.finish();
 const bytes = encoder.bytes();
 writeFileSync(OUT, bytes);
-console.log(`${OUT}: ${(bytes.length / 1024 / 1024).toFixed(2)} MB`);
+
+const seconds = timeline.reduce((total, f) => total + f.delay, 0) / 1000;
+console.log(
+  `${OUT}: ${(bytes.length / 1024 / 1024).toFixed(2)} MB · ` +
+    `${timeline.length} unique frames from ${frames.length} captured · ${seconds.toFixed(1)}s`
+);
+
+function sameFrame(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}

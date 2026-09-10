@@ -19,9 +19,9 @@ npm i react-virtual-checkbox-tree
 
 **[Live demo and docs →](https://react-virtual-checkbox-tree.vercel.app)**
 
-[![100,000 nodes, every folder expanded, 22 rows in the DOM, selection cascaded in 5.4 ms](https://raw.githubusercontent.com/jadghadry/react-virtual-checkbox-tree/main/apps/web/public/demo.gif)](https://react-virtual-checkbox-tree.vercel.app)
+[![100,000 nodes with every folder expanded, 22 rows in the DOM, and one click selecting all 93,302 leaves](https://raw.githubusercontent.com/jadghadry/react-virtual-checkbox-tree/main/apps/web/public/demo.gif)](https://react-virtual-checkbox-tree.vercel.app)
 
-<sub>A real recording of the demo on the site: 100,000 nodes, every folder expanded, **22 rows in the DOM**, and a selection cascaded across all 93,302 leaves in 5.4 ms. Reproduce it with `node scripts/record-demo.mjs`.</sub>
+<sub>A real recording of the demo on the site — no edits, no staging: 100,000 nodes with **every folder expanded**, **22 rows in the DOM**, and one click selecting all 93,302 leaves. Timings in the metric row are measured live in the browser; the isolated engine numbers are in [Performance](#performance). Reproduce the recording with `node scripts/record-demo.mjs`.</sub>
 
 ---
 
