@@ -27,7 +27,7 @@ npm i react-virtual-checkbox-tree
 
 ## TL;DR
 
-| | |
+| Question | Answer |
 | --- | --- |
 | **What it is** | A checkbox tree where folders derive `checked` / `unchecked` / `indeterminate` from their descendants, and only the rows you can see are ever in the DOM. |
 | **Why it's fast** | Selection is stored as sparse *assignments*, not a boolean per node. Checking a folder of 50,000 leaves is **one map write** — measured at 1–3 µs whether the tree holds a thousand nodes or a million. |
