@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  type CSSProperties,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -20,6 +21,7 @@ import {
 import { CopyButton } from "@/components/copy-button";
 import { Metric, MetricBar } from "@/components/metrics";
 import { TreeSkin } from "@/components/tree-skin";
+import { BASE_COLOR, tokenizeTsx, tokenStyle } from "@/lib/highlight-tsx";
 import { generateTree } from "@/lib/tree-data";
 
 // ---------------------------------------------------------------------------
@@ -134,36 +136,48 @@ const SNIPPET_DATA = `const data: TreeDefinition = {
   row:      { id: "row", label: "row.tsx" },
 };`;
 
-const SNIPPET_CHECKBOX = `        renderCheckbox={({ a11yProps, checkedState }) => (
-          // a11yProps is { "aria-hidden": true, tabIndex: -1 }. Spread it: the
-          // row carries role="treeitem" and aria-checked, so a focusable,
-          // announced checkbox inside it would double every row.
-          <span
-            {...a11yProps}
-            style={{
-              alignItems: "center",
-              background: checkedState === "checked" ? "#4f9cf9" : "transparent",
-              border: "1px solid",
-              borderColor: checkedState === "unchecked" ? "#6b6b6b" : "#4f9cf9",
-              borderRadius: 3,
-              color: checkedState === "checked" ? "#0b1220" : "#4f9cf9",
-              display: "inline-flex",
-              fontSize: 9,
-              height: 13,
-              justifyContent: "center",
-              width: 13,
-            }}
-          >
-            {checkedState === "checked" ? "✓" : checkedState === "indeterminate" ? "–" : ""}
-          </span>
-        )}`;
+// Hoisted to module scope on purpose, and the generated snippet prints them the
+// same way. <Tree> memoizes each row and compares the render props by identity,
+// so an inline arrow passed to renderCheckbox/renderItem is a new function on
+// every parent render and re-renders every mounted row. Defining them once costs
+// nothing and is the difference between the virtualizer helping and not.
+const SNIPPET_CHECKBOX_FN = `// Defined once, outside the component. Passing an inline arrow here would give
+// every row a new prop identity on each render and defeat the row memoization.
+function CheckboxGlyph({ a11yProps, checkedState }: TreeCheckboxRenderProps) {
+  // a11yProps is { "aria-hidden": true, tabIndex: -1 }. Spread it: the row
+  // carries role="treeitem" and aria-checked, so a focusable, announced
+  // checkbox inside it would double every row.
+  return (
+    <span
+      {...a11yProps}
+      style={{
+        alignItems: "center",
+        background: checkedState === "checked" ? "#4f9cf9" : "transparent",
+        border: "1px solid",
+        borderColor: checkedState === "unchecked" ? "#6b6b6b" : "#4f9cf9",
+        borderRadius: 3,
+        color: checkedState === "checked" ? "#0b1220" : "#4f9cf9",
+        display: "inline-flex",
+        fontSize: 9,
+        height: 13,
+        justifyContent: "center",
+        width: 13,
+      }}
+    >
+      {checkedState === "checked" ? "✓" : checkedState === "indeterminate" ? "–" : ""}
+    </span>
+  );
+}`;
 
-const SNIPPET_ITEM = `        renderItem={({ isFolder, item }) => (
-          <span style={{ alignItems: "center", display: "flex", gap: 6 }}>
-            <span aria-hidden="true">{isFolder ? "\u{1F4C1}" : "\u{1F4C4}"}</span>
-            {item.label}
-          </span>
-        )}`;
+const SNIPPET_ITEM_FN = `// Also defined once, for the same reason.
+function FileRow({ isFolder, item }: TreeItemRenderProps) {
+  return (
+    <span style={{ alignItems: "center", display: "flex", gap: 6 }}>
+      <span aria-hidden="true">{isFolder ? "\u{1F4C1}" : "\u{1F4C4}"}</span>
+      {item.label}
+    </span>
+  );
+}`;
 
 function buildSnippet(knobs: Knobs): string {
   const props: string[] = [];
@@ -182,10 +196,23 @@ function buildSnippet(knobs: Knobs): string {
       : `onCheck={(leafIds) => console.log(leafIds.length, "leaves checked")}`
   );
   if (knobs.overscan !== DEFAULTS.overscan) push(`overscan={${knobs.overscan}}`);
-  if (knobs.checkbox) props.push(SNIPPET_CHECKBOX);
-  if (knobs.icons) props.push(SNIPPET_ITEM);
+  if (knobs.checkbox) push(`renderCheckbox={CheckboxGlyph}`);
+  if (knobs.icons) push(`renderItem={FileRow}`);
   push(`searchQuery={query}`);
   if (knobs.scope !== DEFAULTS.scope) push(`searchScope="${knobs.scope}"`);
+
+  const renderers = [
+    knobs.checkbox ? SNIPPET_CHECKBOX_FN : null,
+    knobs.icons ? SNIPPET_ITEM_FN : null,
+  ]
+    .filter(Boolean)
+    .map((block) => `\n${block}\n`)
+    .join("");
+
+  const typeImports = [
+    knobs.checkbox ? "\n  type TreeCheckboxRenderProps," : "",
+    knobs.icons ? "\n  type TreeItemRenderProps," : "",
+  ].join("");
 
   const stateLines = [`  const [query, setQuery] = useState("");`];
   if (knobs.controlled) stateLines.push(`  const [checked, setChecked] = useState<string[]>([]);`);
@@ -193,13 +220,16 @@ function buildSnippet(knobs: Knobs): string {
   return `"use client";
 
 import { useState } from "react";
-import { Tree, type TreeDefinition } from "react-virtual-checkbox-tree";
+import {
+  Tree,
+  type TreeDefinition,${typeImports}
+} from "react-virtual-checkbox-tree";
 
 // The canonical example tree. The preview above is running ${knobs.nodes.toLocaleString()} generated
 // nodes; these eight nodes plus the never-rendered "__root__" are here so the
 // snippet pastes and runs as-is.
 ${SNIPPET_DATA}
-
+${renderers}
 export function FileTree() {
 ${stateLines.join("\n")}
 
@@ -380,6 +410,7 @@ export function Playground() {
   };
 
   const snippet = useMemo(() => buildSnippet(knobs), [knobs]);
+  const tokens = useMemo(() => tokenizeTsx(snippet), [snippet]);
   const isDefault = encodeKnobs(knobs) === "";
 
   return (
@@ -641,8 +672,20 @@ export function Playground() {
           </span>
           <CopyButton label="Copy the generated component" text={snippet} />
         </figcaption>
-        <pre className="overflow-x-auto p-3 font-mono text-[12.5px] leading-[1.65] text-[var(--color-fg)]">
-          <code>{snippet}</code>
+        {/* `.shiki` so the theme rules in globals.css — the ones that map
+            --shiki-dark / --shiki-light onto `color` — apply here exactly as
+            they do to the Shiki-rendered blocks in the docs. */}
+        <pre
+          className="shiki overflow-x-auto px-4 py-3.5 font-mono text-[12.5px] leading-[1.7]"
+          style={{ "--shiki-dark": BASE_COLOR[0], "--shiki-light": BASE_COLOR[1] } as CSSProperties}
+        >
+          <code>
+            {tokens.map((token, index) => (
+              <span key={index} style={tokenStyle(token.kind) as CSSProperties}>
+                {token.text}
+              </span>
+            ))}
+          </code>
         </pre>
       </figure>
     </div>
